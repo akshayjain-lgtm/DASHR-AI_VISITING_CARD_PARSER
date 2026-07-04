@@ -4,6 +4,7 @@ from app.models.company import Company
 from app.models.company_enrichment import CompanyEnrichment
 from app.models.exhibition import Exhibition
 from app.models.organization import Organization
+from app.models.phone_otp_verification import PhoneOtpVerification
 from app.models.seller_profile import SellerProfile
 from app.models.user import User
 from app.models.visiting_card import VisitingCard
@@ -18,4 +19,5 @@ __all__ = [
     "CardPhone",
     "CardEmail",
     "CompanyEnrichment",
+    "PhoneOtpVerification",
 ]
