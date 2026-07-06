@@ -13,7 +13,7 @@ import { logout } from "@/lib/api";
 
 const NAV = [
   { id: "dashboard", label: "Leads", icon: LayoutDashboard, path: "/dashboard" },
-  { id: "product", label: "Upload", icon: Upload, path: "/product" },
+  { id: "upload", label: "Upload", icon: Upload, path: "/upload" },
   { id: "profile", label: "Company Profile", icon: Building2, path: "/profile" },
   { id: "home", label: "Settings", icon: Settings, path: "/" },
 ];

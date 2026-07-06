@@ -9,6 +9,11 @@ bcrypt==4.0.1
 pyjwt==2.9.0
 pydantic-settings==2.6.1
 email-validator==2.2.0
+boto3==1.35.74
+celery==5.4.0
+redis==5.2.0
+python-multipart==0.0.17
+Pillow==11.0.0
 
 # --- test-only dependencies (apps/api/tests) ---
 pytest==8.3.4

@@ -222,3 +222,6 @@ __marimo__/
 # app — un-ignore it explicitly so it doesn't get silently swallowed.
 !apps/web/lib/
 !apps/web/lib/**
+
+# Local DB backups (dev/Codespace safety net, never commit — contains password hashes)
+.backups/
