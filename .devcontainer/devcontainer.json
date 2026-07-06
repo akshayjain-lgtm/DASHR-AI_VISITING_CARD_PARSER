@@ -1,0 +1,7 @@
+{
+  "name": "dashr-ai-visiting-card-parser",
+  "image": "mcr.microsoft.com/devcontainers/universal:2",
+  "containerEnv": {
+    "GITHUB_PERSONAL_ACCESS_TOKEN": "${localEnv:MY_GITHUB_PERSONAL_ACCESS_TOKEN}"
+  }
+}
