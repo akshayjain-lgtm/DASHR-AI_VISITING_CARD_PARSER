@@ -5,6 +5,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.routers.auth import router as auth_router
+from app.routers.cards import router as cards_router
+from app.routers.exhibitions import router as exhibitions_router
+from app.services.storage_service import ensure_bucket_exists, guard_production_credentials
 
 logging.basicConfig(level=logging.INFO)
 
@@ -19,3 +22,11 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(cards_router)
+app.include_router(exhibitions_router)
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    guard_production_credentials()
+    ensure_bucket_exists()

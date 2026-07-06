@@ -32,3 +32,24 @@ class InvalidCredentialsError(Exception):
 
 class PhoneNotVerifiedError(Exception):
     """Raised when credentials are correct but the account never completed OTP verification."""
+
+
+class EmptyBatchError(Exception):
+    """Raised when a bulk-upload request contains no files at all."""
+
+
+class UnsupportedFileTypeError(Exception):
+    """Raised when an uploaded file's content-type is not in the allowed image list,
+    or when its actual bytes don't decode to a real image matching that type."""
+
+
+class FileTooLargeError(Exception):
+    """Raised when an uploaded file exceeds the configured max size."""
+
+
+class BatchTooLargeError(Exception):
+    """Raised when a bulk-upload request contains more files than the configured max batch size."""
+
+
+class ExhibitionNotFoundError(Exception):
+    """Raised when a referenced exhibition_id doesn't exist or isn't visible to the caller."""

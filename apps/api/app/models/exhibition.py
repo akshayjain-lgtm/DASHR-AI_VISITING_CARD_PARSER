@@ -1,8 +1,8 @@
 import uuid
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import ForeignKey, text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import TIMESTAMP, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -20,4 +20,7 @@ class Exhibition(Base):
     end_date: Mapped[date | None]
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.user_id")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()")
     )

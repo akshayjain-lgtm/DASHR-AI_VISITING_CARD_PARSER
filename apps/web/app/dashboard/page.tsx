@@ -75,7 +75,7 @@ export default function Dashboard() {
               {LEADS.length} contacts · Last upload: IMTEX 2024
             </p>
           </div>
-          <OBtn onClick={() => router.push("/product")} className="text-sm gap-2">
+          <OBtn onClick={() => router.push("/upload")} className="text-sm gap-2">
             <Upload size={13} /> Bulk Upload
           </OBtn>
         </div>
