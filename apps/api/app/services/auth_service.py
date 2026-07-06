@@ -4,16 +4,24 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.security import hash_password
+from app.core.security import hash_password, verify_password
 from app.models.user import User
 from app.services import otp_service
 from app.services.exceptions import (
     DuplicateEmailError,
+    InvalidCredentialsError,
     PhoneAlreadyVerifiedError,
+    PhoneNotVerifiedError,
     UserNotFoundError,
 )
 from app.services.otp_provider import OtpProvider
-from app.schemas.auth import SignupRequest
+from app.schemas.auth import LoginRequest, SignupRequest
+
+# Precomputed so a nonexistent-email login still pays the same bcrypt cost as
+# a real user with a wrong password — without this, verify_password would
+# only run for real accounts, making lookup time itself an enumeration
+# channel even though the response message is identical either way.
+_DUMMY_PASSWORD_HASH = hash_password("dummy-password-for-timing-parity")
 
 
 def signup(db: Session, data: SignupRequest, provider: OtpProvider) -> User:
@@ -67,3 +75,22 @@ def resend_signup_otp(db: Session, user_id: uuid.UUID, provider: OtpProvider) ->
         raise UserNotFoundError()
 
     otp_service.resend_otp(db, user_id, user.phone_no, provider)
+
+
+def login(db: Session, data: LoginRequest) -> User:
+    user = db.scalar(select(User).where(User.email == data.email))
+    hash_to_check = (
+        user.password_hash if user is not None and user.password_hash else _DUMMY_PASSWORD_HASH
+    )
+    password_ok = verify_password(data.password, hash_to_check)
+
+    if user is None or user.password_hash is None or not password_ok:
+        raise InvalidCredentialsError()
+
+    # Checked only after credentials match, so this never becomes a second
+    # enumeration channel — it only reveals "unverified" to someone who
+    # already proved they know the password.
+    if not user.phone_verified:
+        raise PhoneNotVerifiedError()
+
+    return user

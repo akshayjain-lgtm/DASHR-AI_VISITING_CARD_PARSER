@@ -1,4 +1,7 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// Relative, same-origin path — proxied server-side to apps/api via the
+// rewrite in next.config.mjs. Never call apps/api directly from the browser:
+// that makes the session cookie third-party and browsers will block it.
+const API_URL = "/api";
 
 export class ApiError extends Error {
   status: number;
@@ -70,4 +73,16 @@ export function resendOtp(data: { user_id: string }): Promise<void> {
     method: "POST",
     body: JSON.stringify(data),
   });
+}
+
+export function login(data: { email: string; password: string }): Promise<UserOut> {
+  return request("/auth/login", { method: "POST", body: JSON.stringify(data) });
+}
+
+export function logout(): Promise<void> {
+  return request("/auth/logout", { method: "POST" });
+}
+
+export function me(): Promise<UserOut> {
+  return request("/auth/me");
 }

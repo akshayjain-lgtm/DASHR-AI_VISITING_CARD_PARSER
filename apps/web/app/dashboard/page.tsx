@@ -1,10 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Search, Filter, Upload } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Sidebar } from "@/components/sidebar";
 import { OBtn } from "@/components/buttons";
+import { getCurrentUser } from "@/lib/auth";
+import type { UserOut } from "@/lib/api";
 
 const LEADS = [
   { id: 1, name: "Rajesh Kumar", company: "Bharat Heavy Electricals", designation: "Head of Procurement", score: 91, exhibition: "IMTEX 2024" },
@@ -42,6 +44,11 @@ function ScoreBadge({ score }: { score: number }) {
 export default function Dashboard() {
   const router = useRouter();
   const [search, setSearch] = useState("");
+  const [user, setUser] = useState<UserOut | null>(null);
+
+  useEffect(() => {
+    getCurrentUser().then(setUser);
+  }, []);
 
   const filtered = LEADS.filter(
     (l) =>
@@ -60,6 +67,9 @@ export default function Dashboard() {
         {/* Topbar */}
         <div className="border-b border-black/10 px-8 py-4 flex items-center justify-between bg-white sticky top-0 z-10">
           <div>
+            {user && (
+              <p className="text-xs font-bold text-[#E65527] mb-1">Hi {user.name ?? user.email}</p>
+            )}
             <h1 className="font-black text-lg">Leads</h1>
             <p className="text-xs text-black/35 mt-0.5">
               {LEADS.length} contacts · Last upload: IMTEX 2024

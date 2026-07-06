@@ -9,6 +9,7 @@ import {
   LogOut,
 } from "lucide-react";
 import { DashrLogo } from "./dashr-logo";
+import { logout } from "@/lib/api";
 
 const NAV = [
   { id: "dashboard", label: "Leads", icon: LayoutDashboard, path: "/dashboard" },
@@ -19,6 +20,14 @@ const NAV = [
 
 export function Sidebar({ active }: { active: string }) {
   const router = useRouter();
+
+  async function handleSignOut() {
+    try {
+      await logout();
+    } finally {
+      router.push("/");
+    }
+  }
 
   return (
     <aside className="w-52 bg-[#0d0d0d] min-h-screen flex flex-col shrink-0">
@@ -43,7 +52,7 @@ export function Sidebar({ active }: { active: string }) {
       </nav>
       <div className="p-3 border-t border-white/8">
         <button
-          onClick={() => router.push("/")}
+          onClick={handleSignOut}
           className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-white/35 hover:text-white transition-colors hover:bg-white/5"
         >
           <LogOut size={14} />

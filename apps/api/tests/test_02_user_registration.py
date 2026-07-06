@@ -30,7 +30,6 @@ sends/logs a real code or talks to a real SMS gateway.
 
 from __future__ import annotations
 
-import random
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -40,24 +39,15 @@ from sqlalchemy import func, select, update
 from app.deps import COOKIE_NAME
 from app.models.phone_otp_verification import PhoneOtpVerification
 from app.models.user import User
-
-VALID_PASSWORD = "Str0ngPass!"
+from conftest import VALID_PASSWORD
+from conftest import signup_payload as _signup_payload
+from conftest import unique_email as _unique_email
+from conftest import unique_phone as _unique_phone
 
 
 # --------------------------------------------------------------------------
 # Test data helpers
 # --------------------------------------------------------------------------
-
-
-def _unique_email() -> str:
-    return f"user_{uuid.uuid4().hex[:12]}@example.com"
-
-
-def _unique_phone() -> str:
-    """A phone number matching the spec's India format, `^\\+91[6-9]\\d{9}$`."""
-    first_digit = random.choice("6789")
-    rest = "".join(random.choices("0123456789", k=9))
-    return f"+91{first_digit}{rest}"
 
 
 def _wrong_code(real_code: str) -> str:
@@ -69,17 +59,6 @@ def _wrong_code(real_code: str) -> str:
 
 def _to_uuid(value: str) -> uuid.UUID:
     return value if isinstance(value, uuid.UUID) else uuid.UUID(value)
-
-
-def _signup_payload(**overrides) -> dict:
-    payload = {
-        "name": "Priya Sharma",
-        "email": _unique_email(),
-        "phone_no": _unique_phone(),
-        "password": VALID_PASSWORD,
-    }
-    payload.update(overrides)
-    return payload
 
 
 def _backdate_otp_created_at(db_session, user_id: str, seconds: int) -> None:
@@ -154,7 +133,7 @@ def test_signup_new_user_creates_account_no_session_org_and_role_null(client, fa
     assert otp_row.phone_no == payload["phone_no"]
 
     real_code = fake_otp_provider.latest_code_for(payload["phone_no"])
-    assert len(real_code) == 6 and real_code.isdigit(), "OTP sent to the provider must be a 6-digit code"
+    assert len(real_code) == 4 and real_code.isdigit(), "OTP sent to the provider must be a 4-digit code"
     assert otp_row.otp_code_hash != real_code, "the OTP code must be hashed at rest, never stored raw"
 
 

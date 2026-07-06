@@ -8,6 +8,7 @@ from app.core.security import create_access_token
 from app.deps import COOKIE_NAME, get_current_user, get_db, get_otp_provider
 from app.models.user import User
 from app.schemas.auth import (
+    LoginRequest,
     ResendOtpRequest,
     SignupRequest,
     SignupResponse,
@@ -17,9 +18,11 @@ from app.schemas.auth import (
 from app.services import auth_service
 from app.services.exceptions import (
     DuplicateEmailError,
+    InvalidCredentialsError,
     InvalidOtpError,
     OtpNotFoundError,
     PhoneAlreadyVerifiedError,
+    PhoneNotVerifiedError,
     ResendCooldownError,
     UserNotFoundError,
 )
@@ -38,6 +41,17 @@ def _set_session_cookie(response: Response, user_id: uuid.UUID) -> None:
         samesite="lax",
         path="/",
         max_age=settings.jwt_expire_minutes * 60,
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    # Mirrors _set_session_cookie's path/secure/samesite exactly — mismatched
+    # attributes can silently fail to clear a cookie that was set with Secure.
+    response.delete_cookie(
+        key=COOKIE_NAME,
+        path="/",
+        secure=settings.cookie_secure,
+        samesite="lax",
     )
 
 
@@ -98,3 +112,21 @@ def resend_otp(
 @router.get("/me", response_model=UserOut)
 def me(user: User = Depends(get_current_user)):
     return UserOut.model_validate(user)
+
+
+@router.post("/login", response_model=UserOut)
+def login(data: LoginRequest, response: Response, db: Session = Depends(get_db)):
+    try:
+        user = auth_service.login(db, data)
+    except InvalidCredentialsError:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    except PhoneNotVerifiedError:
+        raise HTTPException(status_code=403, detail="Phone number not verified")
+
+    _set_session_cookie(response, user.user_id)
+    return UserOut.model_validate(user)
+
+
+@router.post("/logout", status_code=204)
+def logout(response: Response, user: User = Depends(get_current_user)):
+    _clear_session_cookie(response)

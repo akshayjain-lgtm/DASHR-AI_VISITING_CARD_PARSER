@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { DashrLogo } from "@/components/dashr-logo";
 import { OBtn } from "@/components/buttons";
-import { signup, verifyOtp, resendOtp, ApiError } from "@/lib/api";
+import { login, signup, verifyOtp, resendOtp, ApiError } from "@/lib/api";
 
 type Mode = "login" | "signup" | "verify-otp";
 
@@ -13,7 +13,7 @@ const HEADINGS: Record<Mode, { title: string; subtitle: string }> = {
   signup: { title: "Create account", subtitle: "Start with a 14-day free trial" },
   "verify-otp": {
     title: "Verify your phone",
-    subtitle: "Enter the 6-digit code we sent to your phone",
+    subtitle: "Enter the 4-digit code we sent to your phone",
   },
 };
 
@@ -47,7 +47,15 @@ export default function LoginPage() {
     setError(null);
 
     if (mode === "login") {
-      router.push("/dashboard");
+      setLoading(true);
+      try {
+        await login({ email, password });
+        router.push("/dashboard");
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : "Something went wrong");
+      } finally {
+        setLoading(false);
+      }
       return;
     }
 
@@ -215,11 +223,11 @@ export default function LoginPage() {
                 <input
                   type="text"
                   inputMode="numeric"
-                  maxLength={6}
+                  maxLength={4}
                   pattern="[0-9]*"
                   value={otpCode}
-                  onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                  placeholder="123456"
+                  onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                  placeholder="1234"
                   className="w-full border border-black/15 px-4 py-2.5 text-sm text-center tracking-[0.5em] font-bold focus:outline-none focus:border-[#E65527] transition-colors bg-white"
                 />
                 <button
@@ -238,7 +246,7 @@ export default function LoginPage() {
             <OBtn
               type="submit"
               className="w-full py-3 mt-2 text-base"
-              disabled={loading || (mode === "verify-otp" && otpCode.length !== 6)}
+              disabled={loading || (mode === "verify-otp" && otpCode.length !== 4)}
             >
               {loading
                 ? "Please wait…"

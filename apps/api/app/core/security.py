@@ -1,4 +1,3 @@
-import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -35,7 +34,9 @@ def verify_otp_hash(code: str, otp_code_hash: str) -> bool:
 
 
 def generate_otp_code() -> str:
-    return "".join(str(secrets.randbelow(10)) for _ in range(6))
+    # Temporary: static code until a real SMS provider is wired up behind
+    # OtpProvider. Revert to random generation once that lands.
+    return "1234"
 
 
 def create_access_token(user_id: uuid.UUID) -> str:

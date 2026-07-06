@@ -24,3 +24,11 @@ class UserNotFoundError(Exception):
 
 class PhoneAlreadyVerifiedError(Exception):
     """Raised when a phone number is already verified on a different account."""
+
+
+class InvalidCredentialsError(Exception):
+    """Raised when email+password does not match a real, usable account."""
+
+
+class PhoneNotVerifiedError(Exception):
+    """Raised when credentials are correct but the account never completed OTP verification."""

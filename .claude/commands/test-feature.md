@@ -1,6 +1,8 @@
 ---
 description: Writes and runs tests for a specific DASHR AI feature. Pass the spec name as argument e.g. /test-feature 05-enrichment-service
-allowed-tools: Bash(pytest), Bash(cd apps/api && pytest*), Bash(cd apps/web && npx vitest*), Bash(cd apps/web && npx playwright*)
+allowed-tools: Bash(pytest), Bash(cd apps/api && pytest*), Bash(cd apps/web && npx vitest*), Bash(cd 
+
+apps/web && npx playwright*)
 ---
 
 Run the full testing pipeline for the feature specified

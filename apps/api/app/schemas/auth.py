@@ -19,11 +19,20 @@ class SignupResponse(BaseModel):
 
 class VerifyOtpRequest(BaseModel):
     user_id: uuid.UUID
-    otp_code: str = Field(min_length=6, max_length=6)
+    otp_code: str = Field(min_length=4, max_length=4)
 
 
 class ResendOtpRequest(BaseModel):
     user_id: uuid.UUID
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    # No min_length (unlike SignupRequest.password): a login attempt must
+    # still hit the generic credential-check path even for a legacy/short
+    # password, not get short-circuited by a schema-level 422. max_length
+    # guards against feeding an oversized string into bcrypt hashing.
+    password: str = Field(max_length=200)
 
 
 class UserOut(BaseModel):

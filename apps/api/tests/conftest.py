@@ -62,6 +62,9 @@ os.environ.setdefault("OTP_MAX_ATTEMPTS", "5")
 os.environ.setdefault("OTP_RESEND_COOLDOWN_SECONDS", "30")
 os.environ.setdefault("COOKIE_SECURE", "false")
 
+import random  # noqa: E402
+import uuid  # noqa: E402
+
 import pytest  # noqa: E402
 from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
@@ -183,3 +186,52 @@ def client(fake_otp_provider: FakeOtpProvider):
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.pop(get_otp_provider, None)
+
+
+# --------------------------------------------------------------------------
+# Shared test-data helpers (used across test_02_user_registration.py and
+# test_03_user_login_logout.py, and any future auth test file) — centralized
+# here rather than copy-pasted per file.
+# --------------------------------------------------------------------------
+
+VALID_PASSWORD = "Str0ngPass!"
+
+
+def unique_email() -> str:
+    return f"user_{uuid.uuid4().hex[:12]}@example.com"
+
+
+def unique_phone() -> str:
+    """A phone number matching the spec's India format, `^\\+91[6-9]\\d{9}$`."""
+    first_digit = random.choice("6789")
+    rest = "".join(random.choices("0123456789", k=9))
+    return f"+91{first_digit}{rest}"
+
+
+def signup_payload(**overrides) -> dict:
+    payload = {
+        "name": "Priya Sharma",
+        "email": unique_email(),
+        "phone_no": unique_phone(),
+        "password": VALID_PASSWORD,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def create_verified_user(client: TestClient, fake_otp_provider: FakeOtpProvider, **overrides) -> dict:
+    """Sign up + verify OTP through the real API, so the resulting account
+    has a real bcrypt password hash produced by the actual signup code path,
+    not a hand-rolled one that could drift from it."""
+    payload = signup_payload(**overrides)
+    signup = client.post("/auth/signup", json=payload)
+    assert signup.status_code == 201, signup.text
+    user_id = signup.json()["user_id"]
+
+    code = fake_otp_provider.latest_code_for(payload["phone_no"])
+    verify = client.post(
+        "/auth/signup/verify-otp", json={"user_id": user_id, "otp_code": code}
+    )
+    assert verify.status_code == 200, verify.text
+
+    return {"user_id": user_id, "email": payload["email"], "password": payload["password"]}
