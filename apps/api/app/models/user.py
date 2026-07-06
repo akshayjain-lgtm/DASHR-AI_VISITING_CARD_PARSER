@@ -19,6 +19,12 @@ class User(Base):
             unique=True,
             postgresql_where=text("role = 'admin'"),
         ),
+        Index(
+            "uq_users_phone_no_verified",
+            "phone_no",
+            unique=True,
+            postgresql_where=text("phone_verified = true"),
+        ),
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -34,4 +40,5 @@ class User(Base):
     name: Mapped[str | None]
     email: Mapped[str] = mapped_column(unique=True)
     phone_no: Mapped[str | None]
+    phone_verified: Mapped[bool] = mapped_column(server_default=text("false"))
     password_hash: Mapped[str | None]

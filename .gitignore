@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# The generic Python "lib/" rule above (packaging build dirs) also matches
+# apps/web/lib/, a real tracked source directory in this monorepo's Next.js
+# app — un-ignore it explicitly so it doesn't get silently swallowed.
+!apps/web/lib/
+!apps/web/lib/**
