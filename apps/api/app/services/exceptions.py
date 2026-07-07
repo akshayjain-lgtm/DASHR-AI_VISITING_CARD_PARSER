@@ -53,3 +53,23 @@ class BatchTooLargeError(Exception):
 
 class ExhibitionNotFoundError(Exception):
     """Raised when a referenced exhibition_id doesn't exist or isn't visible to the caller."""
+
+
+class CardNotFoundError(Exception):
+    """Raised when a referenced card_id doesn't exist or isn't visible to the caller."""
+
+
+class InvalidReprocessStateError(Exception):
+    """Raised when POST /cards/{card_id}/reprocess is called on a card whose status isn't 'failed'."""
+
+
+class ExtractionValidationError(Exception):
+    """Raised by extraction_service when the vision model's output contains no name,
+    no company, no contact info, and no address/website/products at all — signals the
+    image wasn't a readable business card, not a bug to swallow."""
+
+
+class VisionApiError(Exception):
+    """Raised by vision_client for transient failures (timeout, rate limit, 5xx, or an
+    unparseable response) calling the vision API. Retryable by Celery — never a final
+    extraction outcome on its own."""

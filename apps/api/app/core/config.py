@@ -21,9 +21,12 @@ class Settings(BaseSettings):
     max_upload_file_size_mb: int = 10
     max_bulk_upload_files: int = 200
     allowed_card_image_content_types_raw: str = Field(
-        default="image/jpeg,image/png,image/webp",
+        default="image/jpeg,image/png,image/webp,image/heic,image/heif",
         alias="ALLOWED_CARD_IMAGE_CONTENT_TYPES",
     )
+    anthropic_api_key: str = ""
+    vision_model: str = "claude-sonnet-5"
+    vision_request_timeout_seconds: int = 30
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
 

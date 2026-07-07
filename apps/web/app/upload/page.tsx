@@ -4,11 +4,13 @@ import { useEffect, useState } from "react";
 import { UploadCloud, X, CheckCircle2, AlertCircle } from "lucide-react";
 import { Sidebar } from "@/components/sidebar";
 import { OBtn, GBtn } from "@/components/buttons";
+import { CardDetailDrawer } from "@/components/card-detail-drawer";
 import {
   ApiError,
   createExhibition,
   listCards,
   listExhibitions,
+  processCards,
   uploadCards,
   type CardOut,
   type ExhibitionOut,
@@ -29,16 +31,35 @@ export default function UploadPage() {
   const [exhibitionError, setExhibitionError] = useState<string | null>(null);
 
   const [cards, setCards] = useState<CardOut[]>([]);
+  const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  const [isParsing, setIsParsing] = useState(false);
+  const [parseError, setParseError] = useState<string | null>(null);
 
   useEffect(() => {
     listExhibitions().then(setExhibitions);
   }, []);
 
-  useEffect(() => {
-    listCards(selectedExhibitionId ? { exhibition_id: selectedExhibitionId } : {}).then(
+  function refreshCards() {
+    return listCards(selectedExhibitionId ? { exhibition_id: selectedExhibitionId } : {}).then(
       setCards
     );
+  }
+
+  useEffect(() => {
+    refreshCards();
   }, [selectedExhibitionId, uploadedCount]);
+
+  const hasNewCards = cards.some((c) => c.status === "new");
+  const hasInFlightCards = cards.some(
+    (c) => c.status === "new" || c.status === "processing"
+  );
+
+  useEffect(() => {
+    if (!hasInFlightCards) return;
+    const interval = setInterval(refreshCards, 4000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasInFlightCards, selectedExhibitionId]);
 
   function addFiles(newFiles: FileList | File[]) {
     setFiles((prev) => [...prev, ...Array.from(newFiles)]);
@@ -84,6 +105,19 @@ export default function UploadPage() {
     }
   }
 
+  async function handleParseCards() {
+    setIsParsing(true);
+    setParseError(null);
+    try {
+      await processCards(selectedExhibitionId || undefined);
+      await refreshCards();
+    } catch (err) {
+      setParseError(err instanceof ApiError ? err.message : "Failed to start parsing");
+    } finally {
+      setIsParsing(false);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-white flex">
       <Sidebar active="upload" />
@@ -91,8 +125,8 @@ export default function UploadPage() {
         <div className="mb-8">
           <h1 className="text-2xl font-black mb-1">Bulk Upload</h1>
           <p className="text-sm text-black/45">
-            Scan a batch of visiting cards from an exhibition — each card is stored and
-            queued for extraction.
+            Scan a batch of visiting cards from an exhibition — each card is stored, then
+            parsed once you start extraction below.
           </p>
         </div>
 
@@ -169,7 +203,7 @@ export default function UploadPage() {
             <input
               type="file"
               multiple
-              accept="image/*"
+              accept="image/*,.heic,.heif"
               className="hidden"
               onChange={(e) => e.target.files && addFiles(e.target.files)}
             />
@@ -214,16 +248,31 @@ export default function UploadPage() {
         {uploadedCount !== null && (
           <div className="mt-4 border border-green-200 bg-green-50 px-4 py-3 flex items-start gap-2 text-sm text-green-700">
             <CheckCircle2 size={15} className="shrink-0 mt-0.5" />
-            {uploadedCount} card{uploadedCount === 1 ? "" : "s"} uploaded and queued for
-            processing.
+            {uploadedCount} card{uploadedCount === 1 ? "" : "s"} uploaded. Click &ldquo;Parse
+            Cards&rdquo; below to start extraction.
           </div>
         )}
 
         {/* Card list */}
         <div className="mt-10">
-          <h2 className="text-sm font-black uppercase tracking-wider text-black/35 mb-3">
-            Cards {selectedExhibitionId ? "in this exhibition" : ""}
-          </h2>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-black uppercase tracking-wider text-black/35">
+              Cards {selectedExhibitionId ? "in this exhibition" : ""}
+            </h2>
+            {hasNewCards && (
+              <OBtn onClick={handleParseCards} disabled={isParsing} className="text-xs">
+                {isParsing ? "Starting…" : "Parse Cards"}
+              </OBtn>
+            )}
+          </div>
+
+          {parseError && (
+            <div className="mb-3 border border-red-200 bg-red-50 px-4 py-3 flex items-start gap-2 text-sm text-red-700">
+              <AlertCircle size={15} className="shrink-0 mt-0.5" />
+              {parseError}
+            </div>
+          )}
+
           <div className="border border-black/10 overflow-hidden">
             <div className="grid grid-cols-3 gap-4 bg-[#fafafa] border-b border-black/8 px-5 py-3 text-[11px] font-black uppercase tracking-wider text-black/35">
               <span>File</span>
@@ -233,14 +282,21 @@ export default function UploadPage() {
             {cards.map((card) => (
               <div
                 key={card.card_id}
-                className="grid grid-cols-3 gap-4 px-5 py-4 border-b border-black/5 text-sm items-center"
+                onClick={() => setSelectedCardId(card.card_id)}
+                className="grid grid-cols-3 gap-4 px-5 py-4 border-b border-black/5 text-sm items-center cursor-pointer hover:bg-black/[0.02]"
               >
                 <span className="font-semibold">
                   {card.full_name ?? card.original_filename ?? "Untitled card"}
                 </span>
-                <span className="text-black/50 uppercase text-xs tracking-wide">
-                  {card.status}
-                </span>
+                {card.status === "failed" ? (
+                  <span className="inline-block w-fit border border-red-200 bg-red-50 text-red-700 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide">
+                    {card.status}
+                  </span>
+                ) : (
+                  <span className="text-black/50 uppercase text-xs tracking-wide">
+                    {card.status}
+                  </span>
+                )}
                 <span className="text-black/40 text-xs">
                   {new Date(card.created_at).toLocaleString()}
                 </span>
@@ -254,6 +310,14 @@ export default function UploadPage() {
           </div>
         </div>
       </main>
+
+      {selectedCardId && (
+        <CardDetailDrawer
+          cardId={selectedCardId}
+          onClose={() => setSelectedCardId(null)}
+          onChanged={refreshCards}
+        />
+      )}
     </div>
   );
 }

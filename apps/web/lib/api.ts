@@ -120,10 +120,56 @@ export type CardOut = {
   exhibition_id: string | null;
   original_filename: string | null;
   image_url: string;
+  // "new" | "processing" | "extracted" | "failed" | "duplicate" | "merged"
   status: string;
   full_name: string | null;
   job_title: string | null;
   created_at: string;
+};
+
+export type CardCompanyOut = {
+  company_id: string;
+  name: string | null;
+  domain: string | null;
+  website: string | null;
+  enrichment_status: string;
+};
+
+export type CardEmailOut = {
+  email: string | null;
+  email_type: string | null;
+  is_primary: boolean;
+};
+
+export type CardPhoneOut = {
+  phone_e164: string | null;
+  phone_raw: string | null;
+  phone_type: string | null;
+  is_primary: boolean;
+};
+
+export type CardDetailOut = {
+  card_id: string;
+  user_id: string;
+  exhibition_id: string | null;
+  original_filename: string | null;
+  image_url: string;
+  // "new" | "processing" | "extracted" | "failed" | "duplicate" | "merged"
+  status: string;
+  full_name: string | null;
+  job_title: string | null;
+  designation_level: string | null;
+  special_remark: string | null;
+  website: string | null;
+  address: string | null;
+  products_offered: string | null;
+  raw_ocr_text: string | null;
+  extraction_error: string | null;
+  merged_into_card_id: string | null;
+  created_at: string;
+  company: CardCompanyOut | null;
+  emails: CardEmailOut[];
+  phones: CardPhoneOut[];
 };
 
 export type BulkUploadResponse = {
@@ -157,6 +203,23 @@ export function uploadCards(
   if (exhibitionId) formData.append("exhibition_id", exhibitionId);
   files.forEach((file) => formData.append("files", file));
   return requestMultipart("/cards/bulk-upload", formData);
+}
+
+export function getCard(cardId: string): Promise<CardDetailOut> {
+  return request(`/cards/${cardId}`);
+}
+
+export function reprocessCard(cardId: string): Promise<CardOut> {
+  return request(`/cards/${cardId}/reprocess`, { method: "POST" });
+}
+
+export function processCards(
+  exhibitionId?: string
+): Promise<{ enqueued_count: number }> {
+  return request("/cards/process", {
+    method: "POST",
+    body: JSON.stringify({ exhibition_id: exhibitionId ?? null }),
+  });
 }
 
 export function listCards(
