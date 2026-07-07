@@ -13,6 +13,7 @@ class VisitingCard(Base):
     __tablename__ = "visiting_cards"
     __table_args__ = (
         Index("ix_visiting_cards_user_id_status", "user_id", "status"),
+        Index("ix_visiting_cards_upload_batch_id", "upload_batch_id"),
     )
 
     card_id: Mapped[uuid.UUID] = mapped_column(
@@ -34,6 +35,16 @@ class VisitingCard(Base):
     image_url: Mapped[str | None]
     special_remark: Mapped[str | None]
     original_filename: Mapped[str | None]
+    website: Mapped[str | None]
+    address: Mapped[str | None]
+    products_offered: Mapped[str | None]
+    upload_batch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    batch_sequence: Mapped[int | None]
+    merged_into_card_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("visiting_cards.card_id")
+    )
+    extraction_error: Mapped[str | None]
+    processed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     lead_score: Mapped[Decimal | None] = mapped_column(Numeric)
     score_breakdown: Mapped[dict | None] = mapped_column(JSONB)
     scored_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))

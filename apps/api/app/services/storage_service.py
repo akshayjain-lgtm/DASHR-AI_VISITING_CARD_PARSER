@@ -47,6 +47,11 @@ def upload_file(key: str, data: bytes, content_type: str) -> None:
     )
 
 
+def download_file(key: str) -> bytes:
+    response = _get_s3_client().get_object(Bucket=settings.s3_bucket_name, Key=key)
+    return response["Body"].read()
+
+
 def delete_file(key: str) -> None:
     """Best-effort cleanup — called when a mid-batch failure needs to undo
     already-uploaded objects. Never raises: a cleanup failure shouldn't mask

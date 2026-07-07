@@ -690,27 +690,23 @@ def test_card_image_url_is_a_well_formed_absolute_url(client, fake_otp_provider,
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.skip(
+    reason=(
+        "OBSOLETE as of 05-parsing-visiting-card: this test asserted the OLD placeholder "
+        "no-op behavior of process_card ('loads the card, does not mutate status'). "
+        "05-parsing-visiting-card replaced that placeholder with real vision-LLM extraction "
+        "orchestration, so process_card(card_id) now actually calls vision_client.extract_card_fields "
+        "(unmocked here) and mutates status away from 'new'. Real coverage of process_card's "
+        "actual behavior (happy path, back-of-card merge, duplicate detection, permanent/transient "
+        "failure handling) now lives in test_05_parsing_visiting_card.py, with the vision API "
+        "properly mocked via vision_client.extract_card_fields. Left as a skip (not deleted) so "
+        "the supersession is visible in test output rather than silently removed."
+    )
+)
 def test_process_card_task_loads_existing_card_and_does_not_raise(
     client, fake_otp_provider, jpeg_bytes, db_session
 ):
-    """Spec: this step's task body is 'a placeholder (loads the card,
-    no-ops)' — real vision-LLM extraction is 05-card-extraction's job. Calls
-    the task function directly (never `.delay`, never a real broker), per
-    the project's rule to test Celery task logic independent of the broker."""
-    _authenticated_user(client, fake_otp_provider)
-    upload = _upload_files(client, [("card.jpg", jpeg_bytes, "image/jpeg")])
-    assert upload.status_code == 201, upload.text
-    card_id = upload.json()["cards"][0]["card_id"]
-
-    process_card(card_id)  # direct call — must not raise
-
-    row = db_session.execute(
-        select(VisitingCard).where(VisitingCard.card_id == uuid.UUID(card_id))
-    ).scalar_one()
-    assert row.status == "new", (
-        "the placeholder process_card task body must not mutate card status — "
-        "extraction logic belongs to 05-card-extraction, not this step"
-    )
+    pass
 
 
 def test_process_card_task_with_unknown_card_id_does_not_raise():
