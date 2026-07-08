@@ -40,9 +40,10 @@ export default function UploadPage() {
   }, []);
 
   function refreshCards() {
-    return listCards(selectedExhibitionId ? { exhibition_id: selectedExhibitionId } : {}).then(
-      setCards
-    );
+    return listCards({
+      include_folded: true,
+      ...(selectedExhibitionId ? { exhibition_id: selectedExhibitionId } : {}),
+    }).then(setCards);
   }
 
   useEffect(() => {
@@ -292,6 +293,10 @@ export default function UploadPage() {
                   <span className="inline-block w-fit border border-red-200 bg-red-50 text-red-700 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide">
                     {card.status}
                   </span>
+                ) : card.status === "merged" || card.status === "duplicate" ? (
+                  <span className="inline-block w-fit border border-amber-200 bg-amber-50 text-amber-700 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide">
+                    {card.status === "merged" ? "Merged (back side)" : "Duplicate"}
+                  </span>
                 ) : (
                   <span className="text-black/50 uppercase text-xs tracking-wide">
                     {card.status}
@@ -316,6 +321,7 @@ export default function UploadPage() {
           cardId={selectedCardId}
           onClose={() => setSelectedCardId(null)}
           onChanged={refreshCards}
+          onNavigateToCard={setSelectedCardId}
         />
       )}
     </div>

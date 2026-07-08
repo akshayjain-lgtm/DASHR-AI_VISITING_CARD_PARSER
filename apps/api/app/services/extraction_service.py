@@ -1,5 +1,6 @@
 import io
 import logging
+import re
 
 import phonenumbers
 import pillow_heif
@@ -29,6 +30,7 @@ pillow_heif.register_heif_opener()
 _MAX_IMAGE_EDGE_PX = 1568
 _DEFAULT_PHONE_REGION = "IN"
 _FOLDED_STATUSES = ("failed", "merged", "duplicate")
+_GSTIN_PATTERN = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z][Z][0-9A-Z]$")
 
 
 def extract_card(db: Session, card: VisitingCard) -> str:
@@ -103,6 +105,21 @@ def _clean_str(value) -> str | None:
     return trimmed or None
 
 
+def _normalize_gst_number(value) -> str | None:
+    """Strips whitespace the vision model sometimes inserts mid-GSTIN and
+    validates against the standard 15-character GSTIN structure (2-digit
+    state code + 10-char PAN + entity code + 'Z' + checksum). A value that
+    doesn't match is treated as a misread/hallucination and dropped, same
+    as an invalid email."""
+    cleaned = _clean_str(value)
+    if cleaned is None:
+        return None
+    normalized = "".join(cleaned.split()).upper()
+    if not _GSTIN_PATTERN.match(normalized):
+        return None
+    return normalized
+
+
 def _normalize_email(raw_email: dict) -> dict | None:
     email = _clean_str(raw_email.get("email"))
     if email is None:
@@ -151,6 +168,7 @@ def _normalize_fields(raw: dict) -> dict:
         "website": _clean_str(raw.get("website")),
         "address": _clean_str(raw.get("address")),
         "products_offered": _clean_str(raw.get("products_offered")),
+        "gst_number": _normalize_gst_number(raw.get("gst_number")),
         "special_remark": _clean_str(raw.get("special_remark")),
         "raw_ocr_text": _clean_str(raw.get("raw_ocr_text")),
         "emails": emails,
@@ -168,6 +186,7 @@ def _has_any_usable_field(fields: dict) -> bool:
             fields["address"],
             fields["website"],
             fields["products_offered"],
+            fields["gst_number"],
         ]
     )
 
@@ -278,6 +297,7 @@ def _merge_fill_gaps(db: Session, canonical: VisitingCard, fields: dict) -> None
         "website",
         "address",
         "products_offered",
+        "gst_number",
         "special_remark",
         "raw_ocr_text",
     )
@@ -361,6 +381,7 @@ def _apply_new_lead(db: Session, card: VisitingCard, fields: dict) -> None:
     card.website = fields["website"]
     card.address = fields["address"]
     card.products_offered = fields["products_offered"]
+    card.gst_number = fields["gst_number"]
     card.special_remark = fields["special_remark"]
     card.raw_ocr_text = fields["raw_ocr_text"]
 

@@ -34,6 +34,7 @@ class CardOut(BaseModel):
     status: str
     full_name: str | None
     job_title: str | None
+    merged_into_card_id: uuid.UUID | None
     created_at: datetime
 
 
@@ -81,6 +82,7 @@ class CardDetailOut(BaseModel):
     website: str | None
     address: str | None
     products_offered: str | None
+    gst_number: str | None
     raw_ocr_text: str | None
     extraction_error: str | None
     merged_into_card_id: uuid.UUID | None

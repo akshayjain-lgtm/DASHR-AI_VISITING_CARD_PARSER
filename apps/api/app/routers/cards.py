@@ -74,12 +74,15 @@ def process_cards(
 def list_cards(
     exhibition_id: uuid.UUID | None = None,
     status: str | None = None,
+    include_folded: bool = False,
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    cards = card_service.list_cards(db, user, exhibition_id, status, limit, offset)
+    cards = card_service.list_cards(
+        db, user, exhibition_id, status, limit, offset, include_folded
+    )
     return [CardOut.model_validate(c) for c in cards]
 
 

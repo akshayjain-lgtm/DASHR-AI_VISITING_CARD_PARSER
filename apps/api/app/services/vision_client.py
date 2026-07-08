@@ -29,6 +29,13 @@ _TOOL_SCHEMA = {
                 "type": ["string", "null"],
                 "description": "What the company deals in/sells, if stated on the card",
             },
+            "gst_number": {
+                "type": ["string", "null"],
+                "description": (
+                    "Indian GSTIN printed on the card, if present, e.g. "
+                    "27ABCDE1234F1Z5"
+                ),
+            },
             "special_remark": {
                 "type": ["string", "null"],
                 "description": "Any handwritten or marginal note visible on the card",
