@@ -124,6 +124,7 @@ export type CardOut = {
   status: string;
   full_name: string | null;
   job_title: string | null;
+  merged_into_card_id: string | null;
   created_at: string;
 };
 
@@ -163,6 +164,7 @@ export type CardDetailOut = {
   website: string | null;
   address: string | null;
   products_offered: string | null;
+  gst_number: string | null;
   raw_ocr_text: string | null;
   extraction_error: string | null;
   merged_into_card_id: string | null;
@@ -226,6 +228,7 @@ export function listCards(
   params: {
     exhibition_id?: string;
     status?: string;
+    include_folded?: boolean;
     limit?: number;
     offset?: number;
   } = {}
@@ -233,6 +236,7 @@ export function listCards(
   const query = new URLSearchParams();
   if (params.exhibition_id) query.set("exhibition_id", params.exhibition_id);
   if (params.status) query.set("status", params.status);
+  if (params.include_folded) query.set("include_folded", "true");
   if (params.limit != null) query.set("limit", String(params.limit));
   if (params.offset != null) query.set("offset", String(params.offset));
   const qs = query.toString();

@@ -186,16 +186,19 @@ def list_cards(
     status: str | None,
     limit: int,
     offset: int,
+    include_folded: bool = False,
 ) -> list[dict]:
     stmt = scope_to_visible_users(select(VisitingCard), current_user, VisitingCard.user_id)
     if exhibition_id is not None:
         stmt = stmt.where(VisitingCard.exhibition_id == exhibition_id)
     if status is not None:
         stmt = stmt.where(VisitingCard.status == status)
-    else:
+    elif not include_folded:
         # A back-of-card scan or a re-scan of an already-captured contact
         # isn't a separate lead — hide it from the default list. Still
-        # reachable via an explicit ?status=merged/duplicate for audit.
+        # reachable via an explicit ?status=merged/duplicate for audit, or
+        # ?include_folded=true to see everything (e.g. the upload review
+        # screen, where silently dropping a row is confusing).
         stmt = stmt.where(VisitingCard.status.notin_(("merged", "duplicate")))
     stmt = stmt.order_by(VisitingCard.created_at.desc()).limit(limit).offset(offset)
 
@@ -212,6 +215,7 @@ def list_cards(
             "status": c.status,
             "full_name": c.full_name,
             "job_title": c.job_title,
+            "merged_into_card_id": c.merged_into_card_id,
             "created_at": c.created_at,
         }
         for c in cards
@@ -287,6 +291,7 @@ def get_card_detail(db: Session, current_user: User, card_id: uuid.UUID) -> dict
         "website": card.website,
         "address": card.address,
         "products_offered": card.products_offered,
+        "gst_number": card.gst_number,
         "raw_ocr_text": card.raw_ocr_text,
         "extraction_error": card.extraction_error,
         "merged_into_card_id": card.merged_into_card_id,

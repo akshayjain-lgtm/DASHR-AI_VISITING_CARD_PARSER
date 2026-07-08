@@ -9,10 +9,12 @@ export function CardDetailDrawer({
   cardId,
   onClose,
   onChanged,
+  onNavigateToCard,
 }: {
   cardId: string;
   onClose: () => void;
   onChanged?: () => void;
+  onNavigateToCard?: (cardId: string) => void;
 }) {
   const [card, setCard] = useState<CardDetailOut | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -78,6 +80,24 @@ export function CardDetailDrawer({
 
           {card && (
             <>
+              {card.merged_into_card_id && (
+                <div className="border border-amber-200 bg-amber-50 p-3 flex items-start gap-2 text-sm text-amber-800">
+                  <AlertCircle size={14} className="shrink-0 mt-0.5" />
+                  <div>
+                    {card.status === "merged"
+                      ? "This was the back side of another card — its fields were folded into that card."
+                      : "This is a duplicate of a contact already captured — its fields were folded into that card."}
+                    {onNavigateToCard && (
+                      <button
+                        onClick={() => onNavigateToCard(card.merged_into_card_id!)}
+                        className="block mt-1 font-bold underline underline-offset-2"
+                      >
+                        View that card
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
               <div>
                 <p className="text-lg font-black">{card.full_name ?? "Unnamed contact"}</p>
                 <p className="text-sm text-black/50">{card.job_title ?? "—"}</p>
@@ -121,6 +141,12 @@ export function CardDetailDrawer({
                   <p>
                     <span className="text-black/40">Products: </span>
                     {card.products_offered}
+                  </p>
+                )}
+                {card.gst_number && (
+                  <p>
+                    <span className="text-black/40">GST No: </span>
+                    {card.gst_number}
                   </p>
                 )}
               </div>

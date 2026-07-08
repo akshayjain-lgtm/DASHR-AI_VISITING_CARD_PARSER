@@ -219,10 +219,14 @@ def _fields(
     raw_ocr_text: str | None = "verbatim card text",
     emails: list[dict] | None = None,
     phones: list[dict] | None = None,
+    gst_number: str | None = None,
 ) -> dict:
     """Builds a raw vision-model response dict matching the tool schema
     `vision_client.py` documents (name, title, company, website, address,
-    products_offered, handwritten remark, emails[], phones[], is_back_of_card)."""
+    products_offered, handwritten remark, emails[], phones[], is_back_of_card,
+    gst_number [GST-extraction amendment]). `gst_number` defaults to `None` so
+    every pre-existing call site in this file (written before the amendment)
+    is unaffected."""
     return {
         "is_back_of_card": is_back_of_card,
         "full_name": full_name,
@@ -235,6 +239,7 @@ def _fields(
         "raw_ocr_text": raw_ocr_text,
         "emails": [] if emails is None else emails,
         "phones": [] if phones is None else phones,
+        "gst_number": gst_number,
     }
 
 
@@ -1085,6 +1090,412 @@ def test_list_cards_excludes_merged_and_duplicate_by_default_but_includes_on_exp
     duplicate_listing = client.get("/cards", params={"status": "duplicate"})
     assert duplicate_listing.status_code == 200, duplicate_listing.text
     assert duplicate_id in {c["card_id"] for c in duplicate_listing.json()}
+
+
+# --------------------------------------------------------------------------
+# 11b. GET /cards `include_folded` amendment + `CardOut.merged_into_card_id`.
+#
+# Per the spec's amended "GET /cards" bullet: when `status` is omitted,
+# `include_folded=true` includes merged/duplicate rows alongside normal ones
+# (the default, `include_folded=false`, keeps excluding them — unchanged,
+# already covered by
+# `test_list_cards_excludes_merged_and_duplicate_by_default_but_includes_on_explicit_filter`
+# above). An explicit `status=` filter always wins over `include_folded`
+# regardless of its value. `CardOut` (list endpoint) now also carries
+# `merged_into_card_id`: null for a normal/standalone card, set to the
+# canonical card's id for a folded row.
+#
+# These tests build the merged/duplicate row directly via `_set_card_fields`
+# (matching the established pattern in
+# `test_list_cards_excludes_merged_and_duplicate_by_default_but_includes_on_explicit_filter`
+# just above) rather than driving a full extraction merge, since the listing
+# endpoint's filtering/serialization behavior being tested here doesn't
+# depend on how a card came to be `merged`/`duplicate`.
+# --------------------------------------------------------------------------
+
+
+def test_list_cards_include_folded_true_includes_merged_and_duplicate_rows(
+    client, fake_otp_provider, db_session, jpeg_bytes
+):
+    """Amendment: GET /cards?include_folded=true (status omitted) includes
+    merged/duplicate rows alongside normal ones — the folded rows appear on
+    top of whatever the default (include_folded=false) call already
+    returns."""
+    _authenticated_user(client, fake_otp_provider)
+    normal_id = _upload_one(client, jpeg_bytes, filename="normal.jpg")
+    merged_id = _upload_one(client, jpeg_bytes, filename="merged.jpg")
+    duplicate_id = _upload_one(client, jpeg_bytes, filename="duplicate.jpg")
+
+    _set_card_fields(db_session, merged_id, status="merged", merged_into_card_id=uuid.UUID(normal_id))
+    _set_card_fields(
+        db_session, duplicate_id, status="duplicate", merged_into_card_id=uuid.UUID(normal_id)
+    )
+
+    default_listing = client.get("/cards")
+    assert default_listing.status_code == 200, default_listing.text
+    default_ids = {c["card_id"] for c in default_listing.json()}
+    assert normal_id in default_ids
+    assert merged_id not in default_ids and duplicate_id not in default_ids, (
+        "fixture setup: the default (include_folded=false) call must still exclude the folded rows"
+    )
+
+    folded_listing = client.get("/cards", params={"include_folded": "true"})
+    assert folded_listing.status_code == 200, folded_listing.text
+    folded_ids = {c["card_id"] for c in folded_listing.json()}
+    assert normal_id in folded_ids
+    assert merged_id in folded_ids, "include_folded=true must surface the merged row"
+    assert duplicate_id in folded_ids, "include_folded=true must surface the duplicate row"
+    assert len(folded_listing.json()) == len(default_listing.json()) + 2, (
+        "include_folded=true must add exactly the previously-excluded folded rows on top of the "
+        "default listing, one more row per folded card"
+    )
+
+
+def test_list_cards_default_call_still_excludes_merged_and_duplicate_when_include_folded_omitted(
+    client, fake_otp_provider, db_session, jpeg_bytes
+):
+    """Brief sanity check that the new include_folded param defaults to false
+    and doesn't change old behavior — full coverage of the default-exclude
+    behavior already lives in
+    test_list_cards_excludes_merged_and_duplicate_by_default_but_includes_on_explicit_filter."""
+    _authenticated_user(client, fake_otp_provider)
+    normal_id = _upload_one(client, jpeg_bytes, filename="normal.jpg")
+    merged_id = _upload_one(client, jpeg_bytes, filename="merged.jpg")
+    _set_card_fields(db_session, merged_id, status="merged", merged_into_card_id=uuid.UUID(normal_id))
+
+    resp = client.get("/cards")
+
+    assert resp.status_code == 200, resp.text
+    ids = {c["card_id"] for c in resp.json()}
+    assert normal_id in ids
+    assert merged_id not in ids, (
+        "include_folded must default to false, preserving the pre-amendment exclude-by-default behavior"
+    )
+
+
+def test_list_cards_every_row_carries_merged_into_card_id_null_for_normal_set_for_folded(
+    client, fake_otp_provider, db_session, jpeg_bytes
+):
+    """Amendment: CardOut on the list endpoint now carries
+    merged_into_card_id — null for a normal/standalone card, equal to the
+    canonical card's id for a folded (merged/duplicate) row."""
+    _authenticated_user(client, fake_otp_provider)
+    normal_id = _upload_one(client, jpeg_bytes, filename="normal.jpg")
+    merged_id = _upload_one(client, jpeg_bytes, filename="merged.jpg")
+    _set_card_fields(db_session, merged_id, status="merged", merged_into_card_id=uuid.UUID(normal_id))
+
+    resp = client.get("/cards", params={"include_folded": "true"})
+
+    assert resp.status_code == 200, resp.text
+    by_id = {c["card_id"]: c for c in resp.json()}
+
+    assert "merged_into_card_id" in by_id[normal_id], (
+        "CardOut must carry a merged_into_card_id key on every row, including a normal card"
+    )
+    assert by_id[normal_id]["merged_into_card_id"] is None, (
+        "a normal/standalone card's merged_into_card_id must be null"
+    )
+
+    assert "merged_into_card_id" in by_id[merged_id]
+    assert by_id[merged_id]["merged_into_card_id"] == normal_id, (
+        "a folded card's merged_into_card_id on the list endpoint must equal the canonical card's id"
+    )
+
+
+def test_list_cards_explicit_status_filter_wins_over_include_folded_flag(
+    client, fake_otp_provider, db_session, jpeg_bytes
+):
+    """Amendment: an explicit status= filter always wins over include_folded
+    — GET /cards?status=duplicate returns duplicate rows regardless of
+    whether include_folded is false or true."""
+    _authenticated_user(client, fake_otp_provider)
+    normal_id = _upload_one(client, jpeg_bytes, filename="normal.jpg")
+    duplicate_id = _upload_one(client, jpeg_bytes, filename="duplicate.jpg")
+    _set_card_fields(
+        db_session, duplicate_id, status="duplicate", merged_into_card_id=uuid.UUID(normal_id)
+    )
+
+    without_folded = client.get("/cards", params={"status": "duplicate", "include_folded": "false"})
+    assert without_folded.status_code == 200, without_folded.text
+    without_ids = {c["card_id"] for c in without_folded.json()}
+    assert duplicate_id in without_ids
+    assert normal_id not in without_ids, "an explicit status=duplicate filter must not return normal cards"
+
+    with_folded = client.get("/cards", params={"status": "duplicate", "include_folded": "true"})
+    assert with_folded.status_code == 200, with_folded.text
+    with_ids = {c["card_id"] for c in with_folded.json()}
+    assert duplicate_id in with_ids
+    assert normal_id not in with_ids
+
+    assert without_folded.json() == with_folded.json(), (
+        "an explicit status filter must produce identical results regardless of the include_folded value"
+    )
+
+
+# --------------------------------------------------------------------------
+# 12. GST-extraction amendment: gst_number normalization/validation, the
+#     "usable field" rule, fill-gaps-only merge behavior, and the
+#     detail-only (never list-view) exposure rule.
+# --------------------------------------------------------------------------
+
+
+def test_gst_number_extracted_and_normalized_uppercase_and_whitespace_stripped(
+    client, fake_otp_provider, db_session, jpeg_bytes, monkeypatch
+):
+    """Amendment DoD: a card printed with a well-formed GSTIN results in
+    gst_number populated on the extracted card, with whitespace stripped and
+    letters uppercased even if the (mocked) vision output had stray spacing
+    or lowercase letters."""
+    _authenticated_user(client, fake_otp_provider)
+    card_id = _upload_one(client, jpeg_bytes)
+    _patch_vision(
+        monkeypatch,
+        _fields(
+            full_name="Rajesh Gupta",
+            company_name="Himalayan Forge Works",
+            gst_number="  27abcde1234f1z5 ",
+        ),
+    )
+
+    process_card(card_id)
+
+    row = db_session.get(VisitingCard, uuid.UUID(card_id))
+    assert row.status == "extracted"
+    assert row.gst_number == "27ABCDE1234F1Z5", (
+        "a well-formed GSTIN must be stored uppercased with surrounding whitespace stripped"
+    )
+
+
+@pytest.mark.parametrize(
+    "bad_gst, company_name",
+    [
+        # 15 characters but the 13th char must be the literal 'Z' — here it's 'Y'.
+        ("27ABCDE1234F1Y5", "Deccan Fabrications Alpha"),
+        # Only 14 characters — one short of the required 15.
+        ("27ABCDE1234F1Z", "Deccan Fabrications Beta"),
+        # 15 characters but chars 3-7 (should be 5 letters) are digits instead.
+        ("1234567890ABCDE", "Deccan Fabrications Gamma"),
+        # Not GSTIN-shaped at all.
+        ("NOT-A-REAL-GSTIN-1234", "Deccan Fabrications Delta"),
+    ],
+)
+def test_malformed_gst_number_variants_are_dropped_not_stored(
+    client, fake_otp_provider, db_session, jpeg_bytes, monkeypatch, bad_gst, company_name
+):
+    """Amendment DoD: a malformed/hallucinated-looking GSTIN string (doesn't
+    match the standard 15-character GSTIN structure) is dropped rather than
+    stored, same as a malformed email — it must never crash extraction nor
+    persist garbage."""
+    _authenticated_user(client, fake_otp_provider)
+    card_id = _upload_one(client, jpeg_bytes)
+    _patch_vision(
+        monkeypatch,
+        _fields(full_name="Sanjay Mehta", company_name=company_name, gst_number=bad_gst),
+    )
+
+    process_card(card_id)
+
+    row = db_session.get(VisitingCard, uuid.UUID(card_id))
+    assert row.status == "extracted", "a card with other usable fields must still extract successfully"
+    assert row.gst_number is None, (
+        f"malformed GSTIN {bad_gst!r} must be dropped, never persisted as a misread/hallucinated value"
+    )
+
+
+def test_no_gst_number_present_leaves_field_null(
+    client, fake_otp_provider, db_session, jpeg_bytes, monkeypatch
+):
+    """Amendment DoD: a card with no GSTIN at all (field omitted/null from
+    the model) leaves gst_number NULL, with no error."""
+    _authenticated_user(client, fake_otp_provider)
+    card_id = _upload_one(client, jpeg_bytes)
+    _patch_vision(
+        monkeypatch,
+        _fields(full_name="Meena Pillai", company_name="Anand Engineering Co", gst_number=None),
+    )
+
+    process_card(card_id)
+
+    row = db_session.get(VisitingCard, uuid.UUID(card_id))
+    assert row.status == "extracted"
+    assert row.gst_number is None
+
+
+def test_card_with_only_a_valid_gst_number_is_not_marked_failed(
+    client, fake_otp_provider, db_session, jpeg_bytes, monkeypatch
+):
+    """Amendment: gst_number counts as a "usable field" in its own right — a
+    card with only a GSTIN extracted (no name/company/contact info,
+    address/website/products) must NOT be marked failed for lack of usable
+    fields; it becomes a normal extracted lead."""
+    _authenticated_user(client, fake_otp_provider)
+    card_id = _upload_one(client, jpeg_bytes)
+    calls = _patch_vision(
+        monkeypatch,
+        _fields(
+            full_name=None,
+            job_title=None,
+            company_name=None,
+            website=None,
+            address=None,
+            products_offered=None,
+            special_remark=None,
+            gst_number="29AAAAA0000A1Z5",
+        ),
+    )
+
+    process_card(card_id)
+
+    assert len(calls) == 1, "a GSTIN-only card must succeed on the first attempt, no retry involved"
+    row = db_session.get(VisitingCard, uuid.UUID(card_id))
+    assert row.status == "extracted", (
+        "a card with only a valid GSTIN extracted must NOT be marked failed — gst_number counts "
+        "as a usable field on its own, same as name/company/contact info/address/website/products"
+    )
+    assert row.gst_number == "29AAAAA0000A1Z5"
+    assert row.extraction_error is None
+
+
+def test_gst_number_merge_does_not_overwrite_existing_canonical_value(
+    client, fake_otp_provider, db_session, jpeg_bytes, monkeypatch
+):
+    """Amendment: gst_number participates in the fill-gaps-only merge — if
+    the canonical card already has a gst_number, a second (duplicate) scan's
+    different GSTIN must never overwrite it."""
+    _authenticated_user(client, fake_otp_provider)
+    first_id = _upload_one(client, jpeg_bytes, filename="first.jpg")
+    _patch_vision(
+        monkeypatch,
+        _fields(
+            full_name="Arjun Bhatt",
+            company_name="Sahyadri Metal Industries",
+            emails=[{"email": "arjun@sahyadrimetal.com", "email_type": "work"}],
+            gst_number="27ABCDE1234F1Z5",
+        ),
+    )
+    process_card(first_id)
+
+    second_id = _upload_one(client, jpeg_bytes, filename="second.jpg")
+    _patch_vision(
+        monkeypatch,
+        _fields(
+            full_name="Arjun Bhatt",
+            company_name="Sahyadri Metal Industries",
+            # Same primary email (case-insensitive) -> duplicate match, but a
+            # DIFFERENT well-formed GSTIN than the canonical card already has.
+            emails=[{"email": "ARJUN@SAHYADRIMETAL.COM", "email_type": "work"}],
+            gst_number="29XYZAB5678C1Z9",
+        ),
+    )
+    process_card(second_id)
+
+    first = db_session.get(VisitingCard, uuid.UUID(first_id))
+    second = db_session.get(VisitingCard, uuid.UUID(second_id))
+
+    assert second.status == "duplicate"
+    assert str(second.merged_into_card_id) == first_id
+    assert first.gst_number == "27ABCDE1234F1Z5", (
+        "fill-gaps-only merge must never overwrite a gst_number the canonical card already has"
+    )
+
+
+def test_gst_number_merge_fills_gap_when_canonical_has_none(
+    client, fake_otp_provider, db_session, jpeg_bytes, monkeypatch
+):
+    """Amendment: the converse fill-gaps case — if the canonical card has no
+    gst_number yet, a duplicate scan's GSTIN gets filled onto it."""
+    _authenticated_user(client, fake_otp_provider)
+    first_id = _upload_one(client, jpeg_bytes, filename="first.jpg")
+    _patch_vision(
+        monkeypatch,
+        _fields(
+            full_name="Kavita Desai",
+            company_name="Ratnagiri Marine Engineering",
+            emails=[{"email": "kavita@ratnagirimarine.com", "email_type": "work"}],
+            gst_number=None,
+        ),
+    )
+    process_card(first_id)
+
+    second_id = _upload_one(client, jpeg_bytes, filename="second.jpg")
+    _patch_vision(
+        monkeypatch,
+        _fields(
+            full_name="Kavita Desai",
+            company_name="Ratnagiri Marine Engineering",
+            emails=[{"email": "KAVITA@RATNAGIRIMARINE.COM", "email_type": "work"}],
+            gst_number="24LMNOP9012Q1Z3",
+        ),
+    )
+    process_card(second_id)
+
+    first = db_session.get(VisitingCard, uuid.UUID(first_id))
+    second = db_session.get(VisitingCard, uuid.UUID(second_id))
+
+    assert second.status == "duplicate"
+    assert str(second.merged_into_card_id) == first_id
+    assert first.gst_number == "24LMNOP9012Q1Z3", (
+        "a gap on the canonical card (no gst_number yet) must be filled in from the duplicate scan"
+    )
+
+
+def test_get_card_detail_includes_gst_number_for_owner(
+    client, fake_otp_provider, jpeg_bytes, monkeypatch
+):
+    """Amendment DoD: GET /cards/{card_id} exposes gst_number (normalized) in
+    the detail payload for the owner. (Admin-viewing-a-teammate's-card
+    coverage is out of scope here for the same documented reason as this
+    file's existing `test_admin_sees_teammates_card_detail_via_get_card_id`
+    skip — no conftest helper currently supports putting a user through an
+    org/admin setup; once that gap is closed, gst_number rides along with
+    every other CardDetailOut field already covered there.)"""
+    _authenticated_user(client, fake_otp_provider)
+    card_id = _upload_one(client, jpeg_bytes)
+    _patch_vision(
+        monkeypatch,
+        _fields(
+            full_name="Farhan Ali",
+            company_name="Nashik Tool Room",
+            gst_number="  27abcde1234f1z5 ",
+        ),
+    )
+    process_card(card_id)
+
+    resp = client.get(f"/cards/{card_id}")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["gst_number"] == "27ABCDE1234F1Z5", (
+        "GET /cards/{card_id} must expose the normalized gst_number in its detail payload"
+    )
+
+
+def test_list_cards_response_omits_gst_number_key(client, fake_otp_provider, jpeg_bytes, monkeypatch):
+    """Amendment: gst_number is deliberately a detail-only field, the same
+    tier as website/address/products_offered — it must not appear at all on
+    the GET /cards list view (CardOut), not even as a null key."""
+    _authenticated_user(client, fake_otp_provider)
+    card_id = _upload_one(client, jpeg_bytes)
+    _patch_vision(
+        monkeypatch,
+        _fields(
+            full_name="Ismail Sheikh",
+            company_name="Solapur Textile Machinery",
+            gst_number="27ABCDE1234F1Z5",
+        ),
+    )
+    process_card(card_id)
+
+    resp = client.get("/cards")
+
+    assert resp.status_code == 200, resp.text
+    cards = resp.json()
+    matching = [c for c in cards if c["card_id"] == card_id]
+    assert len(matching) == 1, "the processed card must appear exactly once in the default listing"
+    assert "gst_number" not in matching[0], (
+        "GET /cards (list view / CardOut) must not include a gst_number key at all — it stays a "
+        "detail-only field exposed only via GET /cards/{card_id}"
+    )
 
 
 # --------------------------------------------------------------------------

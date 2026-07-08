@@ -38,6 +38,7 @@ class VisitingCard(Base):
     website: Mapped[str | None]
     address: Mapped[str | None]
     products_offered: Mapped[str | None]
+    gst_number: Mapped[str | None]
     upload_batch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     batch_sequence: Mapped[int | None]
     merged_into_card_id: Mapped[uuid.UUID | None] = mapped_column(
