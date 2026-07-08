@@ -114,6 +114,20 @@ export type ExhibitionOut = {
   created_at: string;
 };
 
+export type SellerProfileOut = {
+  profile_id: string | null;
+  company_name: string | null;
+  industry: string | null;
+  product_lines: string | null;
+  // Pydantic v2 serializes Decimal to a JSON string, not a number.
+  last_year_revenue: string | null;
+  revenue_currency: string | null;
+  target_customer_description: string | null;
+  target_regions: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
 export type CardOut = {
   card_id: string;
   user_id: string;
@@ -195,6 +209,20 @@ export function createExhibition(data: {
   end_date?: string;
 }): Promise<ExhibitionOut> {
   return request("/exhibitions", { method: "POST", body: JSON.stringify(data) });
+}
+
+export function getProfile(): Promise<SellerProfileOut> {
+  return request("/profile");
+}
+
+export function updateProfile(data: {
+  company_name?: string;
+  industry?: string;
+  product_lines?: string;
+  target_customer_description?: string;
+  target_regions?: string;
+}): Promise<SellerProfileOut> {
+  return request("/profile", { method: "PUT", body: JSON.stringify(data) });
 }
 
 export function uploadCards(
