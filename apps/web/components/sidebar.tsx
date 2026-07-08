@@ -25,14 +25,19 @@ export function Sidebar({ active }: { active: string }) {
     try {
       await logout();
     } finally {
-      router.push("/");
+      // Hard navigation, not router.push: a soft client-side transition can
+      // be served from Next's Router Cache, which may still hold a stale
+      // "/" -> "/dashboard" redirect cached from while this session was
+      // authenticated — that would bounce a freshly-logged-out user right
+      // back into the dashboard. A full page load always re-hits middleware.
+      window.location.href = "/";
     }
   }
 
   return (
     <aside className="w-52 bg-[#0d0d0d] min-h-screen flex flex-col shrink-0">
       <div className="px-5 py-4 border-b border-white/8">
-        <DashrLogo onClick={() => router.push("/")} height={28} />
+        <DashrLogo onClick={() => router.push("/dashboard")} height={28} />
       </div>
       <nav className="flex-1 p-3 space-y-0.5 mt-1">
         {NAV.map(({ id, label, icon: Icon, path }) => (
