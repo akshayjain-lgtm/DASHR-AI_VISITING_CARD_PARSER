@@ -1,48 +1,105 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Zap, CheckCircle } from "lucide-react";
 import { Sidebar } from "@/components/sidebar";
 import { OBtn } from "@/components/buttons";
+import { ApiError, getProfile, updateProfile, type SellerProfileOut } from "@/lib/api";
 
 type ProfileForm = {
   companyName: string;
   industry: string;
-  businessType: string;
   productLines: string;
   targetBuyer: string;
-  avgDealSize: string;
   salesRegion: string;
 };
+
+const EMPTY_FORM: ProfileForm = {
+  companyName: "",
+  industry: "",
+  productLines: "",
+  targetBuyer: "",
+  salesRegion: "",
+};
+
+type ProfileApiField =
+  | "company_name"
+  | "industry"
+  | "product_lines"
+  | "target_customer_description"
+  | "target_regions";
 
 const FIELDS: {
   label: string;
   key: keyof ProfileForm;
+  apiField: ProfileApiField;
   placeholder: string;
   multi?: boolean;
 }[] = [
-  { label: "Company Name", key: "companyName", placeholder: "Your company name" },
-  { label: "Industry / Sector", key: "industry", placeholder: "e.g. Industrial Pumps & Valves" },
-  { label: "Business Type", key: "businessType", placeholder: "Manufacturer / Distributor / EPC Contractor" },
-  { label: "Product Lines", key: "productLines", placeholder: "List your key products or solutions…", multi: true },
-  { label: "Target Buyer Description", key: "targetBuyer", placeholder: "Describe your ideal buyer role and industry…", multi: true },
-  { label: "Average Deal Size", key: "avgDealSize", placeholder: "₹X – ₹Y" },
-  { label: "Sales Region", key: "salesRegion", placeholder: "States or countries you sell into" },
+  { label: "Company Name", key: "companyName", apiField: "company_name", placeholder: "Your company name" },
+  { label: "Industry / Sector", key: "industry", apiField: "industry", placeholder: "e.g. Industrial Pumps & Valves" },
+  { label: "Product Lines", key: "productLines", apiField: "product_lines", placeholder: "List your key products or solutions…", multi: true },
+  { label: "Target Buyer Description", key: "targetBuyer", apiField: "target_customer_description", placeholder: "Describe your ideal buyer role and industry…", multi: true },
+  { label: "Sales Region", key: "salesRegion", apiField: "target_regions", placeholder: "States or countries you sell into" },
 ];
 
+// Both directions are derived from FIELDS so the ProfileForm <-> API field
+// mapping is defined in exactly one place.
+function toForm(profile: SellerProfileOut): ProfileForm {
+  const form = { ...EMPTY_FORM };
+  for (const { key, apiField } of FIELDS) {
+    form[key] = profile[apiField] ?? "";
+  }
+  return form;
+}
+
+function toUpdatePayload(form: ProfileForm): Record<ProfileApiField, string> {
+  const payload = {} as Record<ProfileApiField, string>;
+  for (const { key, apiField } of FIELDS) {
+    payload[apiField] = form[key];
+  }
+  return payload;
+}
+
 export default function ProfilePage() {
+  const [form, setForm] = useState<ProfileForm>(EMPTY_FORM);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [form, setForm] = useState<ProfileForm>({
-    companyName: "Thermax Limited",
-    industry: "Process Equipment & Heat Exchangers",
-    businessType: "Manufacturer",
-    productLines:
-      "Industrial boilers, heat recovery systems, absorption chillers, water treatment systems",
-    targetBuyer:
-      "Plant engineers, procurement heads, facility managers in chemical, pharma, and food processing",
-    avgDealSize: "₹50L – ₹2Cr",
-    salesRegion: "Pan India, Middle East",
-  });
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getProfile()
+      .then((profile) => {
+        if (!cancelled) setForm(toForm(profile));
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setError("Couldn't load your saved profile. Try refreshing the page.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await updateProfile(toUpdatePayload(form));
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Couldn't save your profile. Try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-white flex">
@@ -77,7 +134,8 @@ export default function ProfilePage() {
                   value={form[key]}
                   onChange={(e) => setForm({ ...form, [key]: e.target.value })}
                   placeholder={placeholder}
-                  className="w-full border border-black/15 px-4 py-2.5 text-sm focus:outline-none focus:border-[#E65527] transition-colors bg-white resize-none"
+                  disabled={loading}
+                  className="w-full border border-black/15 px-4 py-2.5 text-sm focus:outline-none focus:border-[#E65527] transition-colors bg-white resize-none disabled:opacity-60"
                 />
               ) : (
                 <input
@@ -85,25 +143,24 @@ export default function ProfilePage() {
                   value={form[key]}
                   onChange={(e) => setForm({ ...form, [key]: e.target.value })}
                   placeholder={placeholder}
-                  className="w-full border border-black/15 px-4 py-2.5 text-sm focus:outline-none focus:border-[#E65527] transition-colors bg-white"
+                  disabled={loading}
+                  className="w-full border border-black/15 px-4 py-2.5 text-sm focus:outline-none focus:border-[#E65527] transition-colors bg-white disabled:opacity-60"
                 />
               )}
             </div>
           ))}
         </div>
 
+        {error && <p className="text-sm text-red-600 mt-4">{error}</p>}
+
         <div className="flex items-center gap-4 mt-8 pt-8 border-t border-black/8">
-          <OBtn
-            onClick={() => {
-              setSaved(true);
-              setTimeout(() => setSaved(false), 2500);
-            }}
-            className="gap-2"
-          >
+          <OBtn onClick={handleSave} disabled={loading || saving} className="gap-2">
             {saved ? (
               <>
                 <CheckCircle size={14} /> Saved!
               </>
+            ) : saving ? (
+              "Saving…"
             ) : (
               "Save Profile"
             )}
