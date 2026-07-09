@@ -16,7 +16,9 @@ from app.schemas.cards import (
 from app.services import card_service
 from app.services.exceptions import (
     BatchTooLargeError,
+    CardHasNoCompanyError,
     CardNotFoundError,
+    CompanyNotEligibleForEnrichmentError,
     EmptyBatchError,
     ExhibitionNotFoundError,
     FileTooLargeError,
@@ -111,4 +113,23 @@ def reprocess_card(
         raise HTTPException(status_code=404, detail="Card not found")
     except InvalidReprocessStateError:
         raise HTTPException(status_code=409, detail="Card is not in a failed state")
+    return CardOut.model_validate(card)
+
+
+@router.post("/{card_id}/enrich-company", response_model=CardOut)
+def enrich_company(
+    card_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    try:
+        card = card_service.enrich_company_now(db, user, card_id)
+    except CardNotFoundError:
+        raise HTTPException(status_code=404, detail="Card not found")
+    except CardHasNoCompanyError:
+        raise HTTPException(status_code=400, detail="This card has no linked company to enrich")
+    except CompanyNotEligibleForEnrichmentError:
+        raise HTTPException(
+            status_code=409, detail="Company enrichment has already been started or completed"
+        )
     return CardOut.model_validate(card)

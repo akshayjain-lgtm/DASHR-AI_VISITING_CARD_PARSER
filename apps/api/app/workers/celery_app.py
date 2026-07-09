@@ -6,7 +6,7 @@ celery_app = Celery(
     "dashr_ai",
     broker=settings.redis_url,
     backend=settings.redis_url,
-    include=["app.workers.card_processing"],
+    include=["app.workers.card_processing", "app.workers.enrichment_processing"],
 )
 
 celery_app.conf.update(

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Launches (or reloads) the DASHR AI dev stack: Postgres/Redis/MinIO via
-# docker compose, the FastAPI backend (uvicorn), and the Next.js frontend.
+# docker compose, the FastAPI backend (uvicorn), a Celery worker, and the
+# Next.js frontend.
 #
-# Safe to re-run: any previously launched API/web process (tracked via PID
-# file, falling back to whatever is bound to the port) is stopped first, so
-# this always ends with exactly one fresh instance of each picking up the
-# latest code.
+# Safe to re-run: any previously launched API/worker/web process (tracked
+# via PID file, falling back to whatever is bound to the port) is stopped
+# first, so this always ends with exactly one fresh instance of each
+# picking up the latest code.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -18,8 +19,10 @@ WEB_PORT="${WEB_PORT:-3000}"
 RUN_DIR="/tmp/dashr-dev"
 mkdir -p "$RUN_DIR"
 API_LOG="$RUN_DIR/api.log"
+WORKER_LOG="$RUN_DIR/worker.log"
 WEB_LOG="$RUN_DIR/web.log"
 API_PID_FILE="$RUN_DIR/api.pid"
+WORKER_PID_FILE="$RUN_DIR/worker.pid"
 WEB_PID_FILE="$RUN_DIR/web.pid"
 
 stop_if_running() {
@@ -52,8 +55,9 @@ kill_port() {
   fi
 }
 
-echo "== Reloading any running backend/frontend =="
+echo "== Reloading any running backend/worker/frontend =="
 stop_if_running "$API_PID_FILE" "API (uvicorn)"
+stop_if_running "$WORKER_PID_FILE" "Celery worker"
 stop_if_running "$WEB_PID_FILE" "Web (next dev)"
 kill_port "$API_PORT"
 kill_port "$WEB_PORT"
@@ -89,6 +93,29 @@ if ! curl -sf "http://localhost:$API_PORT/docs" >/dev/null; then
 fi
 echo "API up at http://localhost:$API_PORT (pid $(cat "$API_PID_FILE"), logs: $API_LOG)"
 
+echo "== Starting Celery worker =="
+(
+  cd "$API_DIR"
+  source .venv/bin/activate
+  nohup celery -A app.workers.celery_app worker --loglevel=info -Q cards > "$WORKER_LOG" 2>&1 &
+  echo $! > "$WORKER_PID_FILE"
+)
+
+worker_ready=false
+for _ in $(seq 1 30); do
+  grep -q "celery@.* ready\." "$WORKER_LOG" 2>/dev/null && {
+    worker_ready=true
+    break
+  }
+  sleep 1
+done
+if [ "$worker_ready" != true ]; then
+  echo "Celery worker failed to become ready — last 40 lines of $WORKER_LOG:"
+  tail -n 40 "$WORKER_LOG"
+  exit 1
+fi
+echo "Celery worker up (pid $(cat "$WORKER_PID_FILE"), logs: $WORKER_LOG) — without this, uploaded cards enqueue for parsing/enrichment but never actually process."
+
 echo "== Starting Web (next dev) on :$WEB_PORT =="
 (
   cd "$WEB_DIR"
@@ -112,5 +139,6 @@ echo "DASHR AI is running:"
 echo "  Frontend: http://localhost:$WEB_PORT"
 echo "  API:      http://localhost:$API_PORT  (docs at /docs)"
 echo "  Logs:     $API_LOG"
+echo "            $WORKER_LOG"
 echo "            $WEB_LOG"
-echo "  Stop with: kill \$(cat $API_PID_FILE) \$(cat $WEB_PID_FILE)"
+echo "  Stop with: kill \$(cat $API_PID_FILE) \$(cat $WORKER_PID_FILE) \$(cat $WEB_PID_FILE)"

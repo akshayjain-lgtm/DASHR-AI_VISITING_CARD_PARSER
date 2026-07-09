@@ -115,5 +115,10 @@ def process_card(self, card_id: str) -> None:
         card.status = outcome
         card.processed_at = datetime.now(timezone.utc)
         db.commit()
+        # Enrichment is a separate, explicit action — POST
+        # /cards/{card_id}/enrich-company — never auto-triggered here.
+        # Mirrors this codebase's existing convention that every pipeline
+        # stage (upload -> parse -> enrich) is a distinct user-initiated
+        # action, not an invisible side effect of the previous one.
     finally:
         db.close()

@@ -3,6 +3,7 @@ import base64
 import anthropic
 
 from app.core.config import settings
+from app.services import anthropic_client
 from app.services.exceptions import VisionApiError
 
 _TOOL_NAME = "record_card_fields"
@@ -75,10 +76,7 @@ _EXTRACTION_INSTRUCTION = "Read this business card photo and record its fields."
 
 
 def _get_client() -> anthropic.Anthropic:
-    return anthropic.Anthropic(
-        api_key=settings.anthropic_api_key,
-        timeout=settings.vision_request_timeout_seconds,
-    )
+    return anthropic_client.get_client(settings.vision_request_timeout_seconds)
 
 
 def extract_card_fields(image_bytes: bytes, media_type: str) -> dict:

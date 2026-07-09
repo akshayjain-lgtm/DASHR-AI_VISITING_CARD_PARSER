@@ -12,12 +12,15 @@ from app.core.config import settings
 from app.models.card_email import CardEmail
 from app.models.card_phone import CardPhone
 from app.models.company import Company
+from app.models.company_signals import CompanySignals
 from app.models.user import User
 from app.models.visiting_card import VisitingCard
 from app.services import exhibition_service, storage_service
 from app.services.exceptions import (
     BatchTooLargeError,
+    CardHasNoCompanyError,
     CardNotFoundError,
+    CompanyNotEligibleForEnrichmentError,
     EmptyBatchError,
     FileTooLargeError,
     InvalidReprocessStateError,
@@ -25,6 +28,7 @@ from app.services.exceptions import (
 )
 from app.services.visibility import scope_to_visible_users
 from app.workers.card_processing import process_card
+from app.workers.enrichment_processing import enrich_company_task
 
 logger = logging.getLogger(__name__)
 
@@ -264,6 +268,7 @@ def get_visible_card(db: Session, current_user: User, card_id: uuid.UUID) -> Vis
 def get_card_detail(db: Session, current_user: User, card_id: uuid.UUID) -> dict:
     card = get_visible_card(db, current_user, card_id)
     company = db.get(Company, card.company_id) if card.company_id else None
+    signals = db.get(CompanySignals, company.company_id) if company else None
     emails = db.scalars(
         select(CardEmail)
         .where(CardEmail.card_id == card.card_id)
@@ -302,6 +307,14 @@ def get_card_detail(db: Session, current_user: User, card_id: uuid.UUID) -> dict
             "domain": company.domain,
             "website": company.website,
             "enrichment_status": company.enrichment_status,
+            "summary": company.summary,
+            "summary_generated_at": company.summary_generated_at,
+            "linkedin_employee_count": signals.linkedin_employee_count if signals else None,
+            "estimated_revenue_band": signals.estimated_revenue_band if signals else None,
+            "gstin_verified": signals.gstin_verified if signals else None,
+            "udyam_registered": signals.udyam_registered if signals else None,
+            "hiring_signal": signals.hiring_signal if signals else None,
+            "google_rating": signals.google_rating if signals else None,
         }
         if company
         else None,
@@ -335,5 +348,30 @@ def reprocess_card(db: Session, current_user: User, card_id: uuid.UUID) -> Visit
         process_card.delay(str(card.card_id))
     except Exception:
         logger.exception("Failed to enqueue reprocess for card_id=%s", card.card_id)
+
+    return card
+
+
+def enrich_company_now(db: Session, current_user: User, card_id: uuid.UUID) -> VisitingCard:
+    """The explicit "Enrich Company" CTA — POST /cards/{card_id}/enrich-company.
+
+    Enrichment never runs automatically after parsing; a seller has to ask for
+    it, mirroring how "Parse Cards" is itself a separate explicit action from
+    upload rather than an automatic side effect.
+    """
+    card = get_visible_card(db, current_user, card_id)
+    if card.company_id is None:
+        raise CardHasNoCompanyError()
+
+    company = db.get(Company, card.company_id)
+    if company is None or company.enrichment_status != "pending":
+        raise CompanyNotEligibleForEnrichmentError()
+
+    try:
+        enrich_company_task.delay(str(card.company_id), str(card.card_id))
+    except Exception:
+        logger.exception(
+            "Failed to enqueue enrich_company_task for company_id=%s", card.company_id
+        )
 
     return card
