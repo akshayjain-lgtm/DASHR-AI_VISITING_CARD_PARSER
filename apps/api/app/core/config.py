@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     vision_model: str = "claude-sonnet-5"
     vision_request_timeout_seconds: int = 30
+    # Separate from vision_model/vision_request_timeout_seconds — this is a
+    # text-only completion (company enrichment summaries), not a vision
+    # call, so it's tuned (and can be changed) independently.
+    summary_model: str = "claude-sonnet-5"
+    summary_request_timeout_seconds: int = 15
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
 

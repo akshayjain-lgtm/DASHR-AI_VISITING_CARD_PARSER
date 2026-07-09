@@ -45,7 +45,16 @@ class CardCompanyOut(BaseModel):
     name: str | None
     domain: str | None
     website: str | None
+    # "pending" | "enriching" | "enriched" | "not_found" | "failed"
     enrichment_status: str
+    summary: str | None
+    summary_generated_at: datetime | None
+    linkedin_employee_count: int | None
+    estimated_revenue_band: str | None
+    gstin_verified: bool | None
+    udyam_registered: bool | None
+    hiring_signal: str | None
+    google_rating: float | None
 
 
 class CardEmailOut(BaseModel):

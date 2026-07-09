@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { AlertCircle, X } from "lucide-react";
 import { OBtn } from "@/components/buttons";
-import { ApiError, getCard, reprocessCard, type CardDetailOut } from "@/lib/api";
+import { ApiError, enrichCompany, getCard, reprocessCard, type CardDetailOut } from "@/lib/api";
 
 export function CardDetailDrawer({
   cardId,
@@ -20,6 +20,8 @@ export function CardDetailDrawer({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isRetrying, setIsRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
+  const [isEnriching, setIsEnriching] = useState(false);
+  const [enrichError, setEnrichError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -50,6 +52,20 @@ export function CardDetailDrawer({
       setRetryError(err instanceof ApiError ? err.message : "Retry failed");
     } finally {
       setIsRetrying(false);
+    }
+  }
+
+  async function handleEnrichCompany() {
+    setIsEnriching(true);
+    setEnrichError(null);
+    try {
+      await enrichCompany(cardId);
+      onChanged?.();
+      setCard(await getCard(cardId));
+    } catch (err) {
+      setEnrichError(err instanceof ApiError ? err.message : "Failed to start enrichment");
+    } finally {
+      setIsEnriching(false);
     }
   }
 
@@ -113,11 +129,67 @@ export function CardDetailDrawer({
                   Company
                 </h3>
                 {card.company ? (
-                  <div className="text-sm">
+                  <div className="text-sm space-y-2">
                     <p className="font-semibold">{card.company.name}</p>
-                    <span className="text-[11px] uppercase text-black/40">
-                      {card.company.enrichment_status}
-                    </span>
+                    {card.company.enrichment_status === "pending" && (
+                      <div className="space-y-1.5">
+                        <p className="text-black/40 text-xs">
+                          Not enriched yet — pull in public firmographics for this
+                          company.
+                        </p>
+                        <OBtn
+                          onClick={handleEnrichCompany}
+                          disabled={isEnriching}
+                          className="text-xs"
+                        >
+                          {isEnriching ? "Starting…" : "Enrich Company"}
+                        </OBtn>
+                        {enrichError && (
+                          <p className="text-xs text-red-600">{enrichError}</p>
+                        )}
+                      </div>
+                    )}
+                    {card.company.enrichment_status === "enriching" && (
+                      <p className="text-black/40 text-xs">Enriching…</p>
+                    )}
+                    {card.company.enrichment_status === "failed" && (
+                      <p className="text-red-600 text-xs">Enrichment failed</p>
+                    )}
+                    {card.company.summary && (
+                      <p className="text-black/70">{card.company.summary}</p>
+                    )}
+                    <div className="flex flex-wrap gap-1">
+                      {card.company.linkedin_employee_count != null && (
+                        <span className="inline-block border border-black/15 px-2 py-0.5 text-[11px] uppercase tracking-wide text-black/50">
+                          {card.company.linkedin_employee_count} employees
+                        </span>
+                      )}
+                      {card.company.estimated_revenue_band && (
+                        <span className="inline-block border border-black/15 px-2 py-0.5 text-[11px] uppercase tracking-wide text-black/50">
+                          {card.company.estimated_revenue_band}
+                        </span>
+                      )}
+                      {card.company.gstin_verified != null && (
+                        <span className="inline-block border border-black/15 px-2 py-0.5 text-[11px] uppercase tracking-wide text-black/50">
+                          {card.company.gstin_verified ? "GSTIN ✓" : "GSTIN ✗"}
+                        </span>
+                      )}
+                      {card.company.udyam_registered != null && (
+                        <span className="inline-block border border-black/15 px-2 py-0.5 text-[11px] uppercase tracking-wide text-black/50">
+                          {card.company.udyam_registered ? "Udyam ✓" : "Udyam ✗"}
+                        </span>
+                      )}
+                      {card.company.hiring_signal && (
+                        <span className="inline-block border border-black/15 px-2 py-0.5 text-[11px] uppercase tracking-wide text-black/50">
+                          {card.company.hiring_signal}
+                        </span>
+                      )}
+                      {card.company.google_rating != null && (
+                        <span className="inline-block border border-black/15 px-2 py-0.5 text-[11px] uppercase tracking-wide text-black/50">
+                          ★ {card.company.google_rating}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 ) : (
                   <p className="text-sm text-black/30">—</p>

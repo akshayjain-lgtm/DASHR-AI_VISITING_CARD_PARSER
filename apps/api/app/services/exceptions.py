@@ -73,3 +73,15 @@ class VisionApiError(Exception):
     """Raised by vision_client for transient failures (timeout, rate limit, 5xx, or an
     unparseable response) calling the vision API. Retryable by Celery — never a final
     extraction outcome on its own."""
+
+
+class CardHasNoCompanyError(Exception):
+    """Raised by POST /cards/{card_id}/enrich-company when the card has no linked
+    Company yet — extraction never attached one, so there's nothing to enrich."""
+
+
+class CompanyNotEligibleForEnrichmentError(Exception):
+    """Raised by POST /cards/{card_id}/enrich-company when the linked Company's
+    enrichment_status isn't 'pending' — already enriching, enriched, not_found, or
+    failed. Enrichment is a one-shot action per company, not re-triggerable on demand
+    from this endpoint."""

@@ -34,6 +34,8 @@ class Company(Base):
     linkedin_url: Mapped[str | None]
     enrichment_status: Mapped[str] = mapped_column(server_default=text("'pending'"))
     enriched_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    summary: Mapped[str | None]
+    summary_generated_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=text("now()")
     )

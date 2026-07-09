@@ -147,7 +147,16 @@ export type CardCompanyOut = {
   name: string | null;
   domain: string | null;
   website: string | null;
+  // "pending" | "enriching" | "enriched" | "not_found" | "failed"
   enrichment_status: string;
+  summary: string | null;
+  summary_generated_at: string | null;
+  linkedin_employee_count: number | null;
+  estimated_revenue_band: string | null;
+  gstin_verified: boolean | null;
+  udyam_registered: boolean | null;
+  hiring_signal: string | null;
+  google_rating: number | null;
 };
 
 export type CardEmailOut = {
@@ -241,6 +250,10 @@ export function getCard(cardId: string): Promise<CardDetailOut> {
 
 export function reprocessCard(cardId: string): Promise<CardOut> {
   return request(`/cards/${cardId}/reprocess`, { method: "POST" });
+}
+
+export function enrichCompany(cardId: string): Promise<CardOut> {
+  return request(`/cards/${cardId}/enrich-company`, { method: "POST" });
 }
 
 export function processCards(
