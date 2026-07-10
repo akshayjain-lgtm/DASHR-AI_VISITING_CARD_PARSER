@@ -194,9 +194,23 @@ def list_cards(
     limit: int,
     offset: int,
     include_folded: bool = False,
+    unassigned: bool = False,
 ) -> list[dict]:
-    stmt = scope_to_visible_users(select(VisitingCard), current_user, VisitingCard.user_id)
-    if exhibition_id is not None:
+    stmt = scope_to_visible_users(
+        select(VisitingCard, Company.name, Company.enrichment_status).outerjoin(
+            Company, VisitingCard.company_id == Company.company_id
+        ),
+        current_user,
+        VisitingCard.user_id,
+    )
+    # unassigned=True (the "General capture" filter) takes priority over an
+    # exhibition_id, which the caller never sends alongside it anyway — this
+    # mirrors the "no exhibition" bucket in the upload page's exhibition
+    # picker, distinct from omitting the filter entirely (which returns
+    # cards across every exhibition, the picker's separate "All" option).
+    if unassigned:
+        stmt = stmt.where(VisitingCard.exhibition_id.is_(None))
+    elif exhibition_id is not None:
         stmt = stmt.where(VisitingCard.exhibition_id == exhibition_id)
     if status is not None:
         stmt = stmt.where(VisitingCard.status == status)
@@ -209,7 +223,7 @@ def list_cards(
         stmt = stmt.where(VisitingCard.status.notin_(("merged", "duplicate")))
     stmt = stmt.order_by(VisitingCard.created_at.desc()).limit(limit).offset(offset)
 
-    cards = db.scalars(stmt).all()
+    rows = db.execute(stmt).all()
     return [
         {
             "card_id": c.card_id,
@@ -224,17 +238,25 @@ def list_cards(
             "job_title": c.job_title,
             "merged_into_card_id": c.merged_into_card_id,
             "created_at": c.created_at,
+            "company_id": c.company_id,
+            "company_name": company_name,
+            "company_enrichment_status": company_enrichment_status,
         }
-        for c in cards
+        for c, company_name, company_enrichment_status in rows
     ]
 
 
 def enqueue_processing(
-    db: Session, current_user: User, exhibition_id: uuid.UUID | None
+    db: Session,
+    current_user: User,
+    exhibition_id: uuid.UUID | None,
+    card_ids: list[uuid.UUID] | None = None,
 ) -> int:
     """The explicit "Parse Cards" CTA action — enqueues process_card for
     every status='new' card visible to current_user (own cards, or every org
-    member's if admin), optionally narrowed to one exhibition. Returns the
+    member's if admin), optionally narrowed to one exhibition and/or to a
+    specific set of card_ids (a client-picked selection — still re-validated
+    here for visibility and status, never trusted as-is). Returns the
     number of cards matched/attempted, mirroring reprocess_card's
     log-and-move-on handling of broker failures rather than letting one
     enqueue failure fail the whole batch."""
@@ -243,6 +265,8 @@ def enqueue_processing(
     )
     if exhibition_id is not None:
         stmt = stmt.where(VisitingCard.exhibition_id == exhibition_id)
+    if card_ids is not None:
+        stmt = stmt.where(VisitingCard.card_id.in_(card_ids))
 
     cards = db.scalars(stmt).all()
     for card in cards:
@@ -254,6 +278,35 @@ def enqueue_processing(
             )
 
     return len(cards)
+
+
+def to_card_out(db: Session, card: VisitingCard) -> dict:
+    """Builds the dict CardOut expects from a single just-mutated VisitingCard
+    row (reprocess, enrich-company) — these routes only have one ORM object
+    in hand, not list_cards' joined query, so company_enrichment_status is
+    looked up here instead. image_url is left as the raw storage key (not
+    presigned), matching this pair of routes' existing behavior."""
+    company_name = None
+    company_enrichment_status = None
+    if card.company_id is not None:
+        company = db.get(Company, card.company_id)
+        company_name = company.name if company else None
+        company_enrichment_status = company.enrichment_status if company else None
+    return {
+        "card_id": card.card_id,
+        "user_id": card.user_id,
+        "exhibition_id": card.exhibition_id,
+        "original_filename": card.original_filename,
+        "image_url": card.image_url,
+        "status": card.status,
+        "full_name": card.full_name,
+        "job_title": card.job_title,
+        "merged_into_card_id": card.merged_into_card_id,
+        "created_at": card.created_at,
+        "company_id": card.company_id,
+        "company_name": company_name,
+        "company_enrichment_status": company_enrichment_status,
+    }
 
 
 def get_visible_card(db: Session, current_user: User, card_id: uuid.UUID) -> VisitingCard:
@@ -378,6 +431,50 @@ def enrich_company_now(db: Session, current_user: User, card_id: uuid.UUID) -> V
         )
 
     return card
+
+
+def enqueue_enrichment(
+    db: Session, current_user: User, card_ids: list[uuid.UUID]
+) -> tuple[int, int]:
+    """Bulk counterpart to enrich_company_now — the "Enrich Selected" CTA.
+
+    Unlike enrich_company_now, an ineligible card_id (not visible, no linked
+    company, company not "pending", or a company already enqueued earlier in
+    this same call) is silently skipped and counted in skipped_count rather
+    than raising: this is a best-effort batch over a user-picked selection,
+    not the single guarded action enrich_company_now already is. Never
+    enqueues the same company twice in one call — two selected cards can
+    legitimately share one still-pending Company row.
+    """
+    enqueued = 0
+    skipped = 0
+    seen_company_ids: set[uuid.UUID] = set()
+    for card_id in card_ids:
+        try:
+            card = get_visible_card(db, current_user, card_id)
+        except CardNotFoundError:
+            skipped += 1
+            continue
+
+        if card.company_id is None or card.company_id in seen_company_ids:
+            skipped += 1
+            continue
+
+        company = db.get(Company, card.company_id)
+        if company is None or company.enrichment_status != "pending":
+            skipped += 1
+            continue
+
+        seen_company_ids.add(card.company_id)
+        try:
+            enrich_company_task.delay(str(card.company_id), str(card.card_id))
+        except Exception:
+            logger.exception(
+                "Failed to enqueue enrich_company_task for company_id=%s", card.company_id
+            )
+        enqueued += 1
+
+    return enqueued, skipped
 
 
 def delete_card(

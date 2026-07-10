@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { UploadCloud, X, CheckCircle2, AlertCircle, Trash2 } from "lucide-react";
+import { UploadCloud, X, CheckCircle2, AlertCircle, Trash2, Sparkles, Loader2 } from "lucide-react";
 import { Sidebar } from "@/components/sidebar";
 import { OBtn, GBtn } from "@/components/buttons";
 import { CardDetailDrawer } from "@/components/card-detail-drawer";
@@ -9,6 +9,8 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import {
   ApiError,
   createExhibition,
+  enrichCompanies,
+  enrichCompany,
   listCards,
   listExhibitions,
   processCards,
@@ -20,6 +22,8 @@ import { deleteConfirmCopy, useDeleteCardConfirm } from "@/lib/use-delete-card-c
 
 export default function UploadPage() {
   const [exhibitions, setExhibitions] = useState<ExhibitionOut[]>([]);
+  // "" = General capture (cards with no exhibition), "all" = every card
+  // across every exhibition, anything else = a specific exhibition_id.
   const [selectedExhibitionId, setSelectedExhibitionId] = useState<string>("");
   const [showCreateExhibition, setShowCreateExhibition] = useState(false);
   const [newExhibitionName, setNewExhibitionName] = useState("");
@@ -37,14 +41,30 @@ export default function UploadPage() {
   const [isParsing, setIsParsing] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
 
+  const [selectedCardIds, setSelectedCardIds] = useState<Set<string>>(new Set());
+  const [isEnriching, setIsEnriching] = useState(false);
+  const [enrichError, setEnrichError] = useState<string | null>(null);
+  const [rowEnrichingIds, setRowEnrichingIds] = useState<Set<string>>(new Set());
+  const [rowEnrichError, setRowEnrichError] = useState<string | null>(null);
+
   useEffect(() => {
     listExhibitions().then(setExhibitions);
   }, []);
 
+  // Real, upload-able/parse-able exhibition selected — excludes the two
+  // view-only sentinels ("" General capture and "all" every exhibition),
+  // which don't correspond to an exhibition_id a card can be assigned to.
+  const isRealExhibitionSelected =
+    selectedExhibitionId !== "" && selectedExhibitionId !== "all";
+
   function refreshCards() {
     return listCards({
       include_folded: true,
-      ...(selectedExhibitionId ? { exhibition_id: selectedExhibitionId } : {}),
+      ...(selectedExhibitionId === "all"
+        ? {}
+        : isRealExhibitionSelected
+        ? { exhibition_id: selectedExhibitionId }
+        : { unassigned: true }),
     }).then(setCards);
   }
 
@@ -52,10 +72,40 @@ export default function UploadPage() {
     refreshCards();
   }, [selectedExhibitionId, uploadedCount]);
 
-  const hasNewCards = cards.some((c) => c.status === "new");
+  // Drop any selected id that no longer appears in the list (e.g. deleted or
+  // folded into another card via merge) so the selection never silently
+  // references a card that's gone.
+  useEffect(() => {
+    setSelectedCardIds((prev) => {
+      const next = new Set([...prev].filter((id) => cards.some((c) => c.card_id === id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [cards]);
+
   const hasInFlightCards = cards.some(
     (c) => c.status === "new" || c.status === "processing"
   );
+
+  const parseEligibleSelected = cards.filter(
+    (c) => selectedCardIds.has(c.card_id) && c.status === "new"
+  );
+  const enrichEligibleSelected = cards.filter(
+    (c) => selectedCardIds.has(c.card_id) && c.company_enrichment_status === "pending"
+  );
+  const allSelected = cards.length > 0 && cards.every((c) => selectedCardIds.has(c.card_id));
+
+  function toggleSelectAll() {
+    setSelectedCardIds(allSelected ? new Set() : new Set(cards.map((c) => c.card_id)));
+  }
+
+  function toggleCardSelected(cardId: string) {
+    setSelectedCardIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(cardId)) next.delete(cardId);
+      else next.add(cardId);
+      return next;
+    });
+  }
 
   useEffect(() => {
     if (!hasInFlightCards) return;
@@ -98,7 +148,10 @@ export default function UploadPage() {
     setUploadError(null);
     setUploadedCount(null);
     try {
-      const response = await uploadCards(selectedExhibitionId || null, files);
+      const response = await uploadCards(
+        isRealExhibitionSelected ? selectedExhibitionId : null,
+        files
+      );
       setUploadedCount(response.batch_size);
       setFiles([]);
     } catch (err) {
@@ -112,12 +165,47 @@ export default function UploadPage() {
     setIsParsing(true);
     setParseError(null);
     try {
-      await processCards(selectedExhibitionId || undefined);
+      await processCards({
+        exhibitionId: isRealExhibitionSelected ? selectedExhibitionId : undefined,
+        cardIds: parseEligibleSelected.map((c) => c.card_id),
+      });
+      setSelectedCardIds(new Set());
       await refreshCards();
     } catch (err) {
       setParseError(err instanceof ApiError ? err.message : "Failed to start parsing");
     } finally {
       setIsParsing(false);
+    }
+  }
+
+  async function handleEnrichCards() {
+    setIsEnriching(true);
+    setEnrichError(null);
+    try {
+      await enrichCompanies(enrichEligibleSelected.map((c) => c.card_id));
+      setSelectedCardIds(new Set());
+      await refreshCards();
+    } catch (err) {
+      setEnrichError(err instanceof ApiError ? err.message : "Failed to start enrichment");
+    } finally {
+      setIsEnriching(false);
+    }
+  }
+
+  async function handleRowEnrich(cardId: string) {
+    setRowEnrichError(null);
+    setRowEnrichingIds((prev) => new Set(prev).add(cardId));
+    try {
+      await enrichCompany(cardId);
+      await refreshCards();
+    } catch (err) {
+      setRowEnrichError(err instanceof ApiError ? err.message : "Failed to start enrichment");
+    } finally {
+      setRowEnrichingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(cardId);
+        return next;
+      });
     }
   }
 
@@ -155,6 +243,7 @@ export default function UploadPage() {
               className="flex-1 border border-black/12 px-3 py-2 text-sm focus:outline-none focus:border-[#E65527] bg-white"
             >
               <option value="">General capture (no exhibition)</option>
+              <option value="all">All (every exhibition)</option>
               {exhibitions.map((ex) => (
                 <option key={ex.exhibition_id} value={ex.exhibition_id}>
                   {ex.name}
@@ -224,6 +313,10 @@ export default function UploadPage() {
               Choose Files
             </span>
           </label>
+          <p className="text-xs text-black/35 mt-3">
+            Supports JPG, PNG, WEBP, HEIC/HEIF &middot; up to 10MB per file &middot; max 200
+            files per upload
+          </p>
         </div>
 
         {files.length > 0 && (
@@ -270,12 +363,30 @@ export default function UploadPage() {
         <div className="mt-10">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-black uppercase tracking-wider text-black/35">
-              Cards {selectedExhibitionId ? "in this exhibition" : ""}
+              Cards{" "}
+              {selectedExhibitionId === "all"
+                ? "across all exhibitions"
+                : isRealExhibitionSelected
+                ? "in this exhibition"
+                : "in general capture"}
             </h2>
-            {hasNewCards && (
-              <OBtn onClick={handleParseCards} disabled={isParsing} className="text-xs">
-                {isParsing ? "Starting…" : "Parse Cards"}
-              </OBtn>
+            {cards.length > 0 && (
+              <div className="flex items-center gap-2">
+                <OBtn
+                  onClick={handleParseCards}
+                  disabled={isParsing || parseEligibleSelected.length === 0}
+                  className="text-xs"
+                >
+                  {isParsing ? "Starting…" : `Parse Selected (${parseEligibleSelected.length})`}
+                </OBtn>
+                <OBtn
+                  onClick={handleEnrichCards}
+                  disabled={isEnriching || enrichEligibleSelected.length === 0}
+                  className="text-xs"
+                >
+                  {isEnriching ? "Starting…" : `Enrich Selected (${enrichEligibleSelected.length})`}
+                </OBtn>
+              </div>
             )}
           </div>
 
@@ -283,6 +394,20 @@ export default function UploadPage() {
             <div className="mb-3 border border-red-200 bg-red-50 px-4 py-3 flex items-start gap-2 text-sm text-red-700">
               <AlertCircle size={15} className="shrink-0 mt-0.5" />
               {parseError}
+            </div>
+          )}
+
+          {enrichError && (
+            <div className="mb-3 border border-red-200 bg-red-50 px-4 py-3 flex items-start gap-2 text-sm text-red-700">
+              <AlertCircle size={15} className="shrink-0 mt-0.5" />
+              {enrichError}
+            </div>
+          )}
+
+          {rowEnrichError && (
+            <div className="mb-3 border border-red-200 bg-red-50 px-4 py-3 flex items-start gap-2 text-sm text-red-700">
+              <AlertCircle size={15} className="shrink-0 mt-0.5" />
+              {rowEnrichError}
             </div>
           )}
 
@@ -294,49 +419,95 @@ export default function UploadPage() {
           )}
 
           <div className="border border-black/10 overflow-hidden">
-            <div className="grid grid-cols-[1fr_1fr_1fr_auto] gap-4 bg-[#fafafa] border-b border-black/8 px-5 py-3 text-[11px] font-black uppercase tracking-wider text-black/35">
-              <span>File</span>
+            <div className="grid grid-cols-[auto_1fr_1fr_1fr_1fr_auto] gap-4 bg-[#fafafa] border-b border-black/8 px-5 py-3 text-[11px] font-black uppercase tracking-wider text-black/35 items-center justify-items-center text-center">
+              <input
+                type="checkbox"
+                checked={allSelected}
+                onChange={toggleSelectAll}
+                aria-label="Select all cards"
+              />
+              <span>Name / File Name</span>
+              <span>Company Name</span>
               <span>Status</span>
               <span>Uploaded</span>
               <span />
             </div>
-            {cards.map((card) => (
-              <div
-                key={card.card_id}
-                onClick={() => setSelectedCardId(card.card_id)}
-                className="grid grid-cols-[1fr_1fr_1fr_auto] gap-4 px-5 py-4 border-b border-black/5 text-sm items-center cursor-pointer hover:bg-black/[0.02]"
-              >
-                <span className="font-semibold">
-                  {card.full_name ?? card.original_filename ?? "Untitled card"}
-                </span>
-                {card.status === "failed" ? (
-                  <span className="inline-block w-fit border border-red-200 bg-red-50 text-red-700 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide">
-                    {card.status}
-                  </span>
-                ) : card.status === "merged" || card.status === "duplicate" ? (
-                  <span className="inline-block w-fit border border-amber-200 bg-amber-50 text-amber-700 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide">
-                    {card.status === "merged" ? "Merged (back side)" : "Duplicate"}
-                  </span>
-                ) : (
-                  <span className="text-black/50 uppercase text-xs tracking-wide">
-                    {card.status}
-                  </span>
-                )}
-                <span className="text-black/40 text-xs">
-                  {new Date(card.created_at).toLocaleString()}
-                </span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    requestDelete(card.card_id);
-                  }}
-                  className="text-black/30 hover:text-red-600"
-                  aria-label="Delete card"
+            {cards.map((card) => {
+              const isRowEnriching =
+                rowEnrichingIds.has(card.card_id) ||
+                card.company_enrichment_status === "enriching";
+              return (
+                <div
+                  key={card.card_id}
+                  onClick={() => setSelectedCardId(card.card_id)}
+                  className="grid grid-cols-[auto_1fr_1fr_1fr_1fr_auto] gap-4 px-5 py-4 border-b border-black/5 text-sm items-center justify-items-center text-center cursor-pointer hover:bg-black/[0.02]"
                 >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            ))}
+                  <input
+                    type="checkbox"
+                    checked={selectedCardIds.has(card.card_id)}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={() => toggleCardSelected(card.card_id)}
+                    aria-label={`Select ${card.full_name ?? card.original_filename ?? "card"}`}
+                  />
+                  <span className="font-semibold">
+                    {card.full_name ?? card.original_filename ?? "Untitled card"}
+                  </span>
+                  <span className="text-black/60">{card.company_name ?? "—"}</span>
+                  {card.status === "failed" ? (
+                    <span className="inline-block w-fit border border-red-200 bg-red-50 text-red-700 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide">
+                      {card.status}
+                    </span>
+                  ) : card.status === "merged" || card.status === "duplicate" ? (
+                    <span className="inline-block w-fit border border-amber-200 bg-amber-50 text-amber-700 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide">
+                      {card.status === "merged" ? "Merged (back side)" : "Duplicate"}
+                    </span>
+                  ) : card.company_enrichment_status === "enriched" ? (
+                    <span className="inline-block w-fit border border-green-200 bg-green-50 text-green-700 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide">
+                      Enriched
+                    </span>
+                  ) : (
+                    <span className="text-black/50 uppercase text-xs tracking-wide">
+                      {card.status}
+                    </span>
+                  )}
+                  <span className="text-black/40 text-xs">
+                    {new Date(card.created_at).toLocaleString()}
+                  </span>
+                  <div className="flex items-center justify-center gap-2">
+                    {card.company_enrichment_status === "pending" && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRowEnrich(card.card_id);
+                        }}
+                        disabled={rowEnrichingIds.has(card.card_id)}
+                        className="text-black/30 hover:text-[#E65527] disabled:opacity-40 disabled:cursor-not-allowed"
+                        aria-label="Enrich company"
+                      >
+                        <Sparkles size={14} />
+                      </button>
+                    )}
+                    {isRowEnriching && (
+                      <Loader2
+                        size={14}
+                        className="animate-spin text-black/30"
+                        aria-label="Enriching company"
+                      />
+                    )}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        requestDelete(card.card_id);
+                      }}
+                      className="text-black/30 hover:text-red-600"
+                      aria-label="Delete card"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
             {cards.length === 0 && (
               <div className="px-5 py-12 text-center text-sm text-black/30">
                 No cards uploaded yet.

@@ -87,5 +87,6 @@ No new dependencies.
 - After a successful delete, every deleted card's image is no longer retrievable from the configured S3/MinIO bucket at its stored key.
 - In the browser: deleting a childless card (from the drawer or the row-level icon) shows exactly one confirm prompt, then the card disappears from the list without a manual refresh.
 - In the browser: deleting a card with merged children shows the generic confirm, then — after the `409` — a second, distinct prompt nami/ng the child count; declining either prompt leaves the card and its children untouched; confirming both deletes all of them.
+
 - The row-level trash icon on the upload page never opens the detail drawer when clicked.
 - An org admin can delete a card belonging to another member of their org; a non-admin member cannot delete another user's card (verified via a 404, not a 403, matching the existing visibility convention).

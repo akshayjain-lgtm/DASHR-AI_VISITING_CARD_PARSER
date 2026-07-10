@@ -627,6 +627,37 @@ def test_list_cards_filter_by_exhibition_id(client, fake_otp_provider, jpeg_byte
     )
 
 
+def test_list_cards_filter_by_unassigned(client, fake_otp_provider, jpeg_bytes):
+    _authenticated_user(client, fake_otp_provider)
+    exhibition = client.post("/exhibitions", json={"name": "Unassigned Filter Show"})
+    assert exhibition.status_code == 201, exhibition.text
+    exhibition_id = exhibition.json()["exhibition_id"]
+
+    attached = _upload_files(client, [("attached.jpg", jpeg_bytes, "image/jpeg")], exhibition_id=exhibition_id)
+    assert attached.status_code == 201, attached.text
+    attached_card_id = attached.json()["cards"][0]["card_id"]
+
+    unattached = _upload_files(client, [("unattached.jpg", jpeg_bytes, "image/jpeg")])
+    assert unattached.status_code == 201, unattached.text
+    unattached_card_id = unattached.json()["cards"][0]["card_id"]
+
+    filtered = client.get("/cards", params={"unassigned": "true"})
+
+    assert filtered.status_code == 200, filtered.text
+    filtered_ids = {c["card_id"] for c in filtered.json()}
+    assert unattached_card_id in filtered_ids
+    assert attached_card_id not in filtered_ids, (
+        "unassigned=true must exclude cards attached to an exhibition"
+    )
+
+    everything = client.get("/cards")
+    assert everything.status_code == 200, everything.text
+    everything_ids = {c["card_id"] for c in everything.json()}
+    assert attached_card_id in everything_ids and unattached_card_id in everything_ids, (
+        "omitting both exhibition_id and unassigned must return cards regardless of exhibition"
+    )
+
+
 def test_list_cards_filter_by_status(client, fake_otp_provider, jpeg_bytes):
     _authenticated_user(client, fake_otp_provider)
     upload = _upload_files(client, [("card.jpg", jpeg_bytes, "image/jpeg")])
@@ -662,6 +693,19 @@ def test_list_cards_with_malformed_exhibition_id_query_param_returns_422(client,
 # --------------------------------------------------------------------------
 # 9. GET /cards — image_url shape
 # --------------------------------------------------------------------------
+
+
+def test_list_cards_includes_company_name_field(client, fake_otp_provider, jpeg_bytes):
+    _authenticated_user(client, fake_otp_provider)
+    upload = _upload_files(client, [("card.jpg", jpeg_bytes, "image/jpeg")])
+    assert upload.status_code == 201, upload.text
+
+    listing = client.get("/cards")
+    assert listing.status_code == 200, listing.text
+    cards = listing.json()
+    assert len(cards) == 1
+    # A freshly-uploaded card has no linked company yet.
+    assert cards[0]["company_name"] is None
 
 
 def test_card_image_url_is_a_well_formed_absolute_url(client, fake_otp_provider, jpeg_bytes):

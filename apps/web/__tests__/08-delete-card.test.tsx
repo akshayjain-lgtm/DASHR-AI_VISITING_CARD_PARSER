@@ -65,6 +65,9 @@ const sampleCard: CardOut = {
   job_title: "Procurement Manager",
   merged_into_card_id: null,
   created_at: "2026-07-01T00:00:00Z",
+  company_id: null,
+  company_name: null,
+  company_enrichment_status: null,
 };
 
 const sampleExhibitions: ExhibitionOut[] = [];
