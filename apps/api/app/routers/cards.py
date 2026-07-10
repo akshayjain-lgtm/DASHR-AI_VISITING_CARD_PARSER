@@ -9,6 +9,8 @@ from app.schemas.cards import (
     BulkUploadCardSummary,
     BulkUploadResponse,
     CardDetailOut,
+    CardEnrichRequest,
+    CardEnrichResponse,
     CardOut,
     CardProcessRequest,
     CardProcessResponse,
@@ -70,8 +72,18 @@ def process_cards(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    count = card_service.enqueue_processing(db, user, body.exhibition_id)
+    count = card_service.enqueue_processing(db, user, body.exhibition_id, body.card_ids)
     return CardProcessResponse(enqueued_count=count)
+
+
+@router.post("/enrich-companies", response_model=CardEnrichResponse)
+def enrich_companies(
+    body: CardEnrichRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    enqueued, skipped = card_service.enqueue_enrichment(db, user, body.card_ids)
+    return CardEnrichResponse(enqueued_count=enqueued, skipped_count=skipped)
 
 
 @router.get("", response_model=list[CardOut])
@@ -79,13 +91,17 @@ def list_cards(
     exhibition_id: uuid.UUID | None = None,
     status: str | None = None,
     include_folded: bool = False,
+    # True filters to cards with no exhibition_id (the "General capture"
+    # bucket in the upload page's exhibition picker) — distinct from omitting
+    # exhibition_id, which returns cards across every exhibition.
+    unassigned: bool = False,
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     cards = card_service.list_cards(
-        db, user, exhibition_id, status, limit, offset, include_folded
+        db, user, exhibition_id, status, limit, offset, include_folded, unassigned
     )
     return [CardOut.model_validate(c) for c in cards]
 
@@ -115,7 +131,7 @@ def reprocess_card(
         raise HTTPException(status_code=404, detail="Card not found")
     except InvalidReprocessStateError:
         raise HTTPException(status_code=409, detail="Card is not in a failed state")
-    return CardOut.model_validate(card)
+    return CardOut.model_validate(card_service.to_card_out(db, card))
 
 
 @router.post("/{card_id}/enrich-company", response_model=CardOut)
@@ -134,7 +150,7 @@ def enrich_company(
         raise HTTPException(
             status_code=409, detail="Company enrichment has already been started or completed"
         )
-    return CardOut.model_validate(card)
+    return CardOut.model_validate(card_service.to_card_out(db, card))
 
 
 @router.delete("/{card_id}", status_code=204)

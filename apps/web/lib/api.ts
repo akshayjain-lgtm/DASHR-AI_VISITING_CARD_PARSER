@@ -156,6 +156,11 @@ export type CardOut = {
   job_title: string | null;
   merged_into_card_id: string | null;
   created_at: string;
+  company_id: string | null;
+  // Mirrors Company.name, null if no company linked yet
+  company_name: string | null;
+  // "pending" | "enriching" | "enriched" | "not_found" | "failed", null if no company linked yet
+  company_enrichment_status: string | null;
 };
 
 export type CardCompanyOut = {
@@ -300,11 +305,23 @@ export async function deleteCard(cardId: string, confirmCascade = false): Promis
 }
 
 export function processCards(
-  exhibitionId?: string
+  params: { exhibitionId?: string; cardIds?: string[] } = {}
 ): Promise<{ enqueued_count: number }> {
   return request("/cards/process", {
     method: "POST",
-    body: JSON.stringify({ exhibition_id: exhibitionId ?? null }),
+    body: JSON.stringify({
+      exhibition_id: params.exhibitionId ?? null,
+      card_ids: params.cardIds ?? null,
+    }),
+  });
+}
+
+export function enrichCompanies(
+  cardIds: string[]
+): Promise<{ enqueued_count: number; skipped_count: number }> {
+  return request("/cards/enrich-companies", {
+    method: "POST",
+    body: JSON.stringify({ card_ids: cardIds }),
   });
 }
 
@@ -313,6 +330,9 @@ export function listCards(
     exhibition_id?: string;
     status?: string;
     include_folded?: boolean;
+    // Filters to cards with no exhibition assigned (the upload page's
+    // "General capture" filter) — mutually exclusive with exhibition_id.
+    unassigned?: boolean;
     limit?: number;
     offset?: number;
   } = {}
@@ -321,6 +341,7 @@ export function listCards(
   if (params.exhibition_id) query.set("exhibition_id", params.exhibition_id);
   if (params.status) query.set("status", params.status);
   if (params.include_folded) query.set("include_folded", "true");
+  if (params.unassigned) query.set("unassigned", "true");
   if (params.limit != null) query.set("limit", String(params.limit));
   if (params.offset != null) query.set("offset", String(params.offset));
   const qs = query.toString();
