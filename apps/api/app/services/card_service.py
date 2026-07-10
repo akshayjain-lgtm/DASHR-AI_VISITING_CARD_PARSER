@@ -6,6 +6,7 @@ import pillow_heif
 from fastapi import UploadFile
 from PIL import Image
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -18,8 +19,10 @@ from app.models.visiting_card import VisitingCard
 from app.services import exhibition_service, storage_service
 from app.services.exceptions import (
     BatchTooLargeError,
+    CardHasMergedChildrenError,
     CardHasNoCompanyError,
     CardNotFoundError,
+    CardStateChangedError,
     CompanyNotEligibleForEnrichmentError,
     EmptyBatchError,
     FileTooLargeError,
@@ -375,3 +378,56 @@ def enrich_company_now(db: Session, current_user: User, card_id: uuid.UUID) -> V
         )
 
     return card
+
+
+def delete_card(
+    db: Session, current_user: User, card_id: uuid.UUID, confirm_cascade: bool
+) -> None:
+    """Permanently deletes a card (hard delete — no undo). If other cards were
+    merged into this one (back-of-card scans or duplicates, merged_into_card_id
+    pointing at card_id), those children are cascade-deleted too, but only once
+    confirm_cascade=True — otherwise this raises CardHasMergedChildrenError so
+    the caller can get explicit confirmation before anything is removed.
+    """
+    card = get_visible_card(db, current_user, card_id)
+
+    # Scoped by merged_into_card_id alone, NOT by current_user's own
+    # visibility (scope_to_visible_users): get_visible_card above already
+    # proved current_user may see `card`, and a child's authorization
+    # derives from having merged into an already-authorized card, not from
+    # sharing the deleting user's user_id. A duplicate/back-of-card match
+    # can legitimately span owners within the same org — extraction_service's
+    # duplicate search is scoped to the *uploader's* own visibility, which is
+    # org-wide for an admin — so re-scoping this query to current_user would
+    # under-count children a non-admin owns the parent of but not the child
+    # of, letting the parent get deleted while a child still FK-references it.
+    children = db.scalars(
+        select(VisitingCard).where(VisitingCard.merged_into_card_id == card_id)
+    ).all()
+
+    if children and not confirm_cascade:
+        raise CardHasMergedChildrenError(child_count=len(children))
+
+    keys = [c.image_url for c in [card, *children] if c.image_url]
+
+    # Children deleted (and flushed) before the parent — merged_into_card_id
+    # is a self-referencing FK with no ON DELETE rule, so the parent row
+    # can't be removed first while a child still points at it. card_emails/
+    # card_phones cascade at the DB level (ON DELETE CASCADE) already.
+    # Company/CompanySignals are never touched here — shared reference data,
+    # not owned by any one card.
+    for child in children:
+        db.delete(child)
+    db.flush()
+    db.delete(card)
+    try:
+        db.commit()
+    except IntegrityError:
+        # A concurrent request merged a new child onto this card between our
+        # SELECT above and this commit — surface a clean, retryable error
+        # instead of a raw 500.
+        db.rollback()
+        raise CardStateChangedError()
+
+    for key in keys:
+        storage_service.delete_file(key)

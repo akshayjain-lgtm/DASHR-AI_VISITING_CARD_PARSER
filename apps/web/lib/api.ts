@@ -12,6 +12,22 @@ export class ApiError extends Error {
   }
 }
 
+// Thrown by deleteCard when the target card has merged/duplicate children
+// and the caller hasn't confirmed the cascade yet (API responds 409 with a
+// {child_count} body). Distinct from ApiError so callers can show a second,
+// cascade-specific confirmation instead of a generic error. Carries only
+// childCount, not a pre-built message — useDeleteCardConfirm is the single
+// place that turns it into confirmation-dialog copy, so the wording isn't
+// duplicated across every call site.
+export class CardHasMergedChildrenError extends Error {
+  childCount: number;
+
+  constructor(childCount: number) {
+    super(`Card has ${childCount} merged children`);
+    this.childCount = childCount;
+  }
+}
+
 function extractErrorMessage(body: unknown): string {
   const detail = (body as { detail?: unknown } | null)?.detail;
   if (typeof detail === "string") return detail;
@@ -254,6 +270,33 @@ export function reprocessCard(cardId: string): Promise<CardOut> {
 
 export function enrichCompany(cardId: string): Promise<CardOut> {
   return request(`/cards/${cardId}/enrich-company`, { method: "POST" });
+}
+
+// Not routed through request() — a 409 here means "cascade confirmation
+// needed", not a generic failure, and needs its own body-shaped handling
+// (mirrors requestMultipart's existing pattern of a dedicated fetch for a
+// response shape the generic helper doesn't cover).
+export async function deleteCard(cardId: string, confirmCascade = false): Promise<void> {
+  const query = confirmCascade ? "?confirm_cascade=true" : "";
+  const res = await fetch(`${API_URL}/cards/${cardId}${query}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (res.status === 204) return;
+
+  const body = await res.json().catch(() => ({}));
+  // 409 is overloaded: a {child_count} body means "cascade confirmation
+  // needed" (CardHasMergedChildrenError); any other 409 (e.g. a concurrent
+  // merge landed mid-delete) is a generic, retryable ApiError instead.
+  if (
+    res.status === 409 &&
+    typeof body?.detail === "object" &&
+    body.detail !== null &&
+    "child_count" in body.detail
+  ) {
+    throw new CardHasMergedChildrenError(Number(body.detail.child_count));
+  }
+  throw new ApiError(res.status, extractErrorMessage(body));
 }
 
 export function processCards(

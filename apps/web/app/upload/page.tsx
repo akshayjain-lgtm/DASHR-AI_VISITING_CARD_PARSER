@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { UploadCloud, X, CheckCircle2, AlertCircle } from "lucide-react";
+import { UploadCloud, X, CheckCircle2, AlertCircle, Trash2 } from "lucide-react";
 import { Sidebar } from "@/components/sidebar";
 import { OBtn, GBtn } from "@/components/buttons";
 import { CardDetailDrawer } from "@/components/card-detail-drawer";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import {
   ApiError,
   createExhibition,
@@ -15,6 +16,7 @@ import {
   type CardOut,
   type ExhibitionOut,
 } from "@/lib/api";
+import { deleteConfirmCopy, useDeleteCardConfirm } from "@/lib/use-delete-card-confirm";
 
 export default function UploadPage() {
   const [exhibitions, setExhibitions] = useState<ExhibitionOut[]>([]);
@@ -118,6 +120,16 @@ export default function UploadPage() {
       setIsParsing(false);
     }
   }
+
+  const {
+    state: deleteState,
+    isDeleting,
+    deleteError,
+    requestDelete,
+    confirm: confirmDelete,
+    cancel: cancelDelete,
+  } = useDeleteCardConfirm(refreshCards);
+  const deleteConfirm = deleteConfirmCopy(deleteState);
 
   return (
     <div className="min-h-screen bg-white flex">
@@ -274,17 +286,25 @@ export default function UploadPage() {
             </div>
           )}
 
+          {deleteError && (
+            <div className="mb-3 border border-red-200 bg-red-50 px-4 py-3 flex items-start gap-2 text-sm text-red-700">
+              <AlertCircle size={15} className="shrink-0 mt-0.5" />
+              {deleteError}
+            </div>
+          )}
+
           <div className="border border-black/10 overflow-hidden">
-            <div className="grid grid-cols-3 gap-4 bg-[#fafafa] border-b border-black/8 px-5 py-3 text-[11px] font-black uppercase tracking-wider text-black/35">
+            <div className="grid grid-cols-[1fr_1fr_1fr_auto] gap-4 bg-[#fafafa] border-b border-black/8 px-5 py-3 text-[11px] font-black uppercase tracking-wider text-black/35">
               <span>File</span>
               <span>Status</span>
               <span>Uploaded</span>
+              <span />
             </div>
             {cards.map((card) => (
               <div
                 key={card.card_id}
                 onClick={() => setSelectedCardId(card.card_id)}
-                className="grid grid-cols-3 gap-4 px-5 py-4 border-b border-black/5 text-sm items-center cursor-pointer hover:bg-black/[0.02]"
+                className="grid grid-cols-[1fr_1fr_1fr_auto] gap-4 px-5 py-4 border-b border-black/5 text-sm items-center cursor-pointer hover:bg-black/[0.02]"
               >
                 <span className="font-semibold">
                   {card.full_name ?? card.original_filename ?? "Untitled card"}
@@ -305,6 +325,16 @@ export default function UploadPage() {
                 <span className="text-black/40 text-xs">
                   {new Date(card.created_at).toLocaleString()}
                 </span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    requestDelete(card.card_id);
+                  }}
+                  className="text-black/30 hover:text-red-600"
+                  aria-label="Delete card"
+                >
+                  <Trash2 size={14} />
+                </button>
               </div>
             ))}
             {cards.length === 0 && (
@@ -315,6 +345,15 @@ export default function UploadPage() {
           </div>
         </div>
       </main>
+
+      {deleteConfirm && (
+        <ConfirmDialog
+          {...deleteConfirm}
+          isConfirming={isDeleting}
+          onConfirm={confirmDelete}
+          onCancel={cancelDelete}
+        />
+      )}
 
       {selectedCardId && (
         <CardDetailDrawer

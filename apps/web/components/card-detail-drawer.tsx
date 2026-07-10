@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { AlertCircle, X } from "lucide-react";
-import { OBtn } from "@/components/buttons";
+import { AlertCircle, Trash2, X } from "lucide-react";
+import { DBtn, OBtn } from "@/components/buttons";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ApiError, enrichCompany, getCard, reprocessCard, type CardDetailOut } from "@/lib/api";
+import { deleteConfirmCopy, useDeleteCardConfirm } from "@/lib/use-delete-card-confirm";
 
 export function CardDetailDrawer({
   cardId,
@@ -22,6 +24,17 @@ export function CardDetailDrawer({
   const [retryError, setRetryError] = useState<string | null>(null);
   const [isEnriching, setIsEnriching] = useState(false);
   const [enrichError, setEnrichError] = useState<string | null>(null);
+  const {
+    state: deleteState,
+    isDeleting,
+    deleteError,
+    requestDelete,
+    confirm: confirmDelete,
+    cancel: cancelDelete,
+  } = useDeleteCardConfirm(() => {
+    onChanged?.();
+    onClose();
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -68,6 +81,8 @@ export function CardDetailDrawer({
       setIsEnriching(false);
     }
   }
+
+  const deleteConfirm = deleteConfirmCopy(deleteState);
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
@@ -271,10 +286,28 @@ export function CardDetailDrawer({
                   {retryError && <p className="text-xs text-red-600">{retryError}</p>}
                 </div>
               )}
+
+              <div className="border-t border-black/8 pt-4">
+                <DBtn onClick={() => requestDelete(cardId)} className="text-xs">
+                  <Trash2 size={13} /> Delete Card
+                </DBtn>
+                {deleteError && (
+                  <p className="mt-2 text-xs text-red-600">{deleteError}</p>
+                )}
+              </div>
             </>
           )}
         </div>
       </div>
+
+      {deleteConfirm && (
+        <ConfirmDialog
+          {...deleteConfirm}
+          isConfirming={isDeleting}
+          onConfirm={confirmDelete}
+          onCancel={cancelDelete}
+        />
+      )}
     </div>
   );
 }

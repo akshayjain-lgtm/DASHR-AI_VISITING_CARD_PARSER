@@ -85,3 +85,22 @@ class CompanyNotEligibleForEnrichmentError(Exception):
     enrichment_status isn't 'pending' — already enriching, enriched, not_found, or
     failed. Enrichment is a one-shot action per company, not re-triggerable on demand
     from this endpoint."""
+
+
+class CardHasMergedChildrenError(Exception):
+    """Raised by DELETE /cards/{card_id} when the target card has other cards
+    merged into it (merged_into_card_id pointing at it) and the caller hasn't
+    confirmed the cascade via confirm_cascade=true. Carries child_count so the
+    router can tell the caller how many cards would also be deleted."""
+
+    def __init__(self, child_count: int):
+        self.child_count = child_count
+        child_word = "child" if child_count == 1 else "children"
+        super().__init__(f"Card has {child_count} merged {child_word}; cascade not confirmed")
+
+
+class CardStateChangedError(Exception):
+    """Raised by DELETE /cards/{card_id} when a concurrent request merged a
+    new child onto this card between the children lookup and the commit,
+    causing the self-referencing merged_into_card_id FK to reject the delete
+    at commit time. The caller should retry the request."""
