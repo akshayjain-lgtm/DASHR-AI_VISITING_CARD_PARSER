@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '\\a' > /dev/tty 2>/dev/null; echo '{\"systemMessage\": \"check the terminal, the process is completed\"}'"
+          }
+        ]
+      }
+    ]
+  }
+}
