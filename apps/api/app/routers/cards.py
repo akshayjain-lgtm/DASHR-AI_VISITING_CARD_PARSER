@@ -16,8 +16,10 @@ from app.schemas.cards import (
 from app.services import card_service
 from app.services.exceptions import (
     BatchTooLargeError,
+    CardHasMergedChildrenError,
     CardHasNoCompanyError,
     CardNotFoundError,
+    CardStateChangedError,
     CompanyNotEligibleForEnrichmentError,
     EmptyBatchError,
     ExhibitionNotFoundError,
@@ -133,3 +135,32 @@ def enrich_company(
             status_code=409, detail="Company enrichment has already been started or completed"
         )
     return CardOut.model_validate(card)
+
+
+@router.delete("/{card_id}", status_code=204)
+def delete_card(
+    card_id: uuid.UUID,
+    confirm_cascade: bool = False,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    try:
+        card_service.delete_card(db, user, card_id, confirm_cascade)
+    except CardNotFoundError:
+        raise HTTPException(status_code=404, detail="Card not found")
+    except CardHasMergedChildrenError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    f"This card has {exc.child_count} merged card"
+                    f"{'s' if exc.child_count != 1 else ''} that will also be deleted."
+                ),
+                "child_count": exc.child_count,
+            },
+        )
+    except CardStateChangedError:
+        raise HTTPException(
+            status_code=409,
+            detail="This card changed while being deleted — please try again",
+        )
