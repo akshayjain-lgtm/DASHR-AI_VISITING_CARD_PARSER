@@ -5,21 +5,10 @@ import { Search, Filter, Upload } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Sidebar } from "@/components/sidebar";
 import { OBtn } from "@/components/buttons";
+import { CardDetailDrawer } from "@/components/card-detail-drawer";
 import { getCurrentUser } from "@/lib/auth";
-import type { UserOut } from "@/lib/api";
-
-const LEADS = [
-  { id: 1, name: "Rajesh Kumar", company: "Bharat Heavy Electricals", designation: "Head of Procurement", score: 91, exhibition: "IMTEX 2024" },
-  { id: 2, name: "Anand Sharma", company: "Thermax Limited", designation: "Director Engineering", score: 88, exhibition: "IMTEX 2024" },
-  { id: 3, name: "Priya Nair", company: "Larsen & Toubro", designation: "VP Operations", score: 84, exhibition: "Hannover Messe India" },
-  { id: 4, name: "Sunita Rao", company: "Siemens India", designation: "Procurement Lead", score: 83, exhibition: "IMTEX 2024" },
-  { id: 5, name: "Divya Menon", company: "ABB India", designation: "Purchase Manager", score: 79, exhibition: "Hannover Messe India" },
-  { id: 6, name: "Suresh Patel", company: "Mahindra Manufacturing", designation: "Plant Manager", score: 72, exhibition: "ENGIMACH 2024" },
-  { id: 7, name: "Vikram Joshi", company: "Tata Steel", designation: "Senior Buyer", score: 67, exhibition: "Metal Steel India 2024" },
-  { id: 8, name: "Mohan Das", company: "CPCL Refinery", designation: "Sr. Process Engineer", score: 55, exhibition: "PETRO INDIA 2024" },
-  { id: 9, name: "Meena Krishnan", company: "Kirloskar Brothers", designation: "GM Procurement", score: 45, exhibition: "PLASTIVISION 2024" },
-  { id: 10, name: "Arun Iyer", company: "KOEL India", designation: "Director Operations", score: 38, exhibition: "ENGIMACH 2024" },
-];
+import { ApiError, listCards, scoreCards, type CardOut, type UserOut } from "@/lib/api";
+import { useCardSelection } from "@/lib/use-card-selection";
 
 function ScoreBadge({ score }: { score: number }) {
   if (score >= 80)
@@ -41,24 +30,64 @@ function ScoreBadge({ score }: { score: number }) {
   );
 }
 
+function UnscoredBadge() {
+  return (
+    <span className="inline-flex px-2.5 py-0.5 text-[11px] font-black bg-black/4 text-black/30 tracking-wide">
+      UNSCORED
+    </span>
+  );
+}
+
 export default function Dashboard() {
   const router = useRouter();
   const [search, setSearch] = useState("");
   const [user, setUser] = useState<UserOut | null>(null);
+  const [cards, setCards] = useState<CardOut[]>([]);
+  const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  const [isScoring, setIsScoring] = useState(false);
+  const [scoreError, setScoreError] = useState<string | null>(null);
+
+  const { selectedCardIds, allSelected, toggleSelectAll, toggleCardSelected, clearSelection } =
+    useCardSelection(cards);
 
   useEffect(() => {
     getCurrentUser().then(setUser);
   }, []);
 
-  const filtered = LEADS.filter(
-    (l) =>
-      l.name.toLowerCase().includes(search.toLowerCase()) ||
-      l.company.toLowerCase().includes(search.toLowerCase()) ||
-      l.exhibition.toLowerCase().includes(search.toLowerCase())
+  function refreshCards() {
+    return listCards().then(setCards);
+  }
+
+  useEffect(() => {
+    refreshCards();
+  }, []);
+
+  const filtered = cards.filter(
+    (c) =>
+      (c.full_name ?? "").toLowerCase().includes(search.toLowerCase()) ||
+      (c.company_name ?? "").toLowerCase().includes(search.toLowerCase())
   );
 
-  const highCount = LEADS.filter((l) => l.score >= 80).length;
-  const lowCount = LEADS.filter((l) => l.score < 60).length;
+  const highCount = cards.filter((c) => c.lead_score != null && c.lead_score >= 80).length;
+  const lowCount = cards.filter((c) => c.lead_score != null && c.lead_score < 60).length;
+
+  const scoreEligibleSelected = cards.filter(
+    (c) => selectedCardIds.has(c.card_id) && c.status === "extracted"
+  );
+
+  async function handleScoreCards() {
+    setIsScoring(true);
+    setScoreError(null);
+    try {
+      await scoreCards(scoreEligibleSelected.map((c) => c.card_id));
+      clearSelection();
+      await refreshCards();
+    } catch (err) {
+      setScoreError(err instanceof ApiError ? err.message : "Failed to start scoring");
+    } finally {
+      setIsScoring(false);
+    }
+  }
 
   return (
     <div className="min-h-screen bg-white flex">
@@ -71,9 +100,7 @@ export default function Dashboard() {
               <p className="text-xs font-bold text-[#E65527] mb-1">Hi {user.name ?? user.email}</p>
             )}
             <h1 className="font-black text-lg">Leads</h1>
-            <p className="text-xs text-black/35 mt-0.5">
-              {LEADS.length} contacts · Last upload: IMTEX 2024
-            </p>
+            <p className="text-xs text-black/35 mt-0.5">{cards.length} contacts</p>
           </div>
           <OBtn onClick={() => router.push("/upload")} className="text-sm gap-2">
             <Upload size={13} /> Bulk Upload
@@ -84,7 +111,7 @@ export default function Dashboard() {
           {/* Stats */}
           <div className="grid grid-cols-3 gap-4">
             {[
-              { label: "Total Leads", value: LEADS.length, sub: "Across all exhibitions", accent: false },
+              { label: "Total Leads", value: cards.length, sub: "Across all exhibitions", accent: false },
               { label: "High Fit", value: highCount, sub: "Score ≥ 80% — call first", accent: true },
               { label: "Low Fit", value: lowCount, sub: "Score < 60% — deprioritise", accent: false },
             ].map(({ label, value, sub, accent }) => (
@@ -109,7 +136,7 @@ export default function Dashboard() {
               <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-black/30" />
               <input
                 type="text"
-                placeholder="Search name, company, or exhibition…"
+                placeholder="Search name or company…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="w-full border border-black/12 pl-8 pr-4 py-2 text-sm focus:outline-none focus:border-[#E65527] bg-white transition-colors"
@@ -118,27 +145,59 @@ export default function Dashboard() {
             <button className="border border-black/12 px-3 py-2 text-sm flex items-center gap-2 text-black/50 hover:border-black/25 transition-colors">
               <Filter size={12} /> Filter
             </button>
+            <div className="flex-1" />
+            {cards.length > 0 && (
+              <OBtn
+                onClick={handleScoreCards}
+                disabled={isScoring || scoreEligibleSelected.length === 0}
+                className="text-xs"
+              >
+                {isScoring ? "Starting…" : `Score Selected (${scoreEligibleSelected.length})`}
+              </OBtn>
+            )}
           </div>
+
+          {scoreError && (
+            <div className="border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {scoreError}
+            </div>
+          )}
 
           {/* Table */}
           <div className="border border-black/10 overflow-hidden">
-            <div className="grid grid-cols-5 gap-4 bg-[#fafafa] border-b border-black/8 px-5 py-3 text-[11px] font-black uppercase tracking-wider text-black/35">
+            <div className="grid grid-cols-[auto_1fr_1fr_1fr_1fr] gap-4 bg-[#fafafa] border-b border-black/8 px-5 py-3 text-[11px] font-black uppercase tracking-wider text-black/35 items-center">
+              <input
+                type="checkbox"
+                checked={allSelected}
+                onChange={toggleSelectAll}
+                aria-label="Select all cards"
+              />
               <span>Name</span>
               <span>Company</span>
               <span>Designation</span>
               <span>Score</span>
-              <span>Exhibition</span>
             </div>
-            {filtered.map((lead) => (
+            {filtered.map((card) => (
               <div
-                key={lead.id}
-                className="grid grid-cols-5 gap-4 px-5 py-4 border-b border-black/5 text-sm hover:bg-[#E65527]/2 transition-colors cursor-pointer items-center"
+                key={card.card_id}
+                onClick={() => setSelectedCardId(card.card_id)}
+                className="grid grid-cols-[auto_1fr_1fr_1fr_1fr] gap-4 px-5 py-4 border-b border-black/5 text-sm hover:bg-[#E65527]/2 transition-colors cursor-pointer items-center"
               >
-                <span className="font-semibold">{lead.name}</span>
-                <span className="text-black/55">{lead.company}</span>
-                <span className="text-black/50">{lead.designation}</span>
-                <ScoreBadge score={lead.score} />
-                <span className="text-black/40 text-xs">{lead.exhibition}</span>
+                <input
+                  type="checkbox"
+                  checked={selectedCardIds.has(card.card_id)}
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={() => toggleCardSelected(card.card_id)}
+                  aria-label={`Select ${card.full_name ?? "card"}`}
+                />
+                <span className="font-semibold">{card.full_name ?? "Unnamed contact"}</span>
+                <span className="text-black/55">{card.company_name ?? "—"}</span>
+                <span className="text-black/50">{card.job_title ?? "—"}</span>
+                {card.lead_score == null ? (
+                  <UnscoredBadge />
+                ) : (
+                  <ScoreBadge score={card.lead_score} />
+                )}
               </div>
             ))}
             {filtered.length === 0 && (
@@ -149,6 +208,15 @@ export default function Dashboard() {
           </div>
         </div>
       </main>
+
+      {selectedCardId && (
+        <CardDetailDrawer
+          cardId={selectedCardId}
+          onClose={() => setSelectedCardId(null)}
+          onChanged={refreshCards}
+          onNavigateToCard={setSelectedCardId}
+        />
+      )}
     </div>
   );
 }

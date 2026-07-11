@@ -161,6 +161,11 @@ export type CardOut = {
   company_name: string | null;
   // "pending" | "enriching" | "enriched" | "not_found" | "failed", null if no company linked yet
   company_enrichment_status: string | null;
+  // 0-100, null until POST /cards/{id}/score has run at least once
+  lead_score: number | null;
+  // {designation_score, company_size_score, industry_fit_score, momentum_signal_score, remark_signal_score, total, version}
+  score_breakdown: Record<string, number | string> | null;
+  scored_at: string | null;
 };
 
 export type CardCompanyOut = {
@@ -213,6 +218,9 @@ export type CardDetailOut = {
   extraction_error: string | null;
   merged_into_card_id: string | null;
   created_at: string;
+  lead_score: number | null;
+  score_breakdown: Record<string, number | string> | null;
+  scored_at: string | null;
   company: CardCompanyOut | null;
   emails: CardEmailOut[];
   phones: CardPhoneOut[];
@@ -320,6 +328,19 @@ export function enrichCompanies(
   cardIds: string[]
 ): Promise<{ enqueued_count: number; skipped_count: number }> {
   return request("/cards/enrich-companies", {
+    method: "POST",
+    body: JSON.stringify({ card_ids: cardIds }),
+  });
+}
+
+export function scoreCard(cardId: string): Promise<CardOut> {
+  return request(`/cards/${cardId}/score`, { method: "POST" });
+}
+
+export function scoreCards(
+  cardIds: string[]
+): Promise<{ enqueued_count: number; skipped_count: number }> {
+  return request("/cards/score", {
     method: "POST",
     body: JSON.stringify({ card_ids: cardIds }),
   });

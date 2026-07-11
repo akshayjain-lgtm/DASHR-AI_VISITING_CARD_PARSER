@@ -1,10 +1,17 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertCircle, Trash2, X } from "lucide-react";
 import { DBtn, OBtn } from "@/components/buttons";
 import { ConfirmDialog } from "@/components/confirm-dialog";
-import { ApiError, enrichCompany, getCard, reprocessCard, type CardDetailOut } from "@/lib/api";
+import {
+  ApiError,
+  enrichCompany,
+  getCard,
+  reprocessCard,
+  scoreCard,
+  type CardDetailOut,
+} from "@/lib/api";
 import { deleteConfirmCopy, useDeleteCardConfirm } from "@/lib/use-delete-card-confirm";
 
 export function CardDetailDrawer({
@@ -24,6 +31,14 @@ export function CardDetailDrawer({
   const [retryError, setRetryError] = useState<string | null>(null);
   const [isEnriching, setIsEnriching] = useState(false);
   const [enrichError, setEnrichError] = useState<string | null>(null);
+  const [isScoring, setIsScoring] = useState(false);
+  const [scoreError, setScoreError] = useState<string | null>(null);
+  // Scoring runs async in a Celery worker — scored_at changing is the only
+  // completion signal (status never mutates). This ref holds the scored_at
+  // value from just before the current scoring attempt, so the poll below
+  // knows when a *new* score has actually landed rather than just re-reading
+  // the same stale one.
+  const priorScoredAtRef = useRef<string | null>(null);
   const {
     state: deleteState,
     isDeleting,
@@ -79,6 +94,46 @@ export function CardDetailDrawer({
       setEnrichError(err instanceof ApiError ? err.message : "Failed to start enrichment");
     } finally {
       setIsEnriching(false);
+    }
+  }
+
+  // Polls while a scoring run is in flight, since a single re-fetch right
+  // after the enqueue call resolves has no guarantee the worker has
+  // finished yet — same gap the upload page's row-scoring spinner solves.
+  useEffect(() => {
+    if (!isScoring) return;
+    const interval = setInterval(async () => {
+      try {
+        const latest = await getCard(cardId);
+        if (latest.scored_at !== priorScoredAtRef.current) {
+          setCard(latest);
+          setIsScoring(false);
+          onChanged?.();
+        }
+      } catch {
+        // Transient poll failure — keep polling rather than surfacing an error.
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [isScoring, cardId, onChanged]);
+
+  async function handleScoreCard() {
+    priorScoredAtRef.current = card?.scored_at ?? null;
+    setIsScoring(true);
+    setScoreError(null);
+    try {
+      await scoreCard(cardId);
+      onChanged?.();
+      const latest = await getCard(cardId);
+      setCard(latest);
+      if (latest.scored_at !== priorScoredAtRef.current) {
+        setIsScoring(false);
+      }
+      // Else: leave isScoring true — the polling effect above takes over
+      // until scored_at actually changes.
+    } catch (err) {
+      setScoreError(err instanceof ApiError ? err.message : "Failed to score card");
+      setIsScoring(false);
     }
   }
 
@@ -209,6 +264,58 @@ export function CardDetailDrawer({
                 ) : (
                   <p className="text-sm text-black/30">—</p>
                 )}
+              </div>
+
+              <div>
+                <h3 className="text-[11px] font-black uppercase tracking-wider text-black/35 mb-1">
+                  Lead Score
+                </h3>
+                {card.lead_score != null ? (
+                  <div className="space-y-2">
+                    <p className="text-2xl font-black">
+                      {card.lead_score}
+                      <span className="text-sm text-black/30">/100</span>
+                    </p>
+                    {card.score_breakdown && (
+                      <div className="flex flex-wrap gap-1">
+                        {(() => {
+                          const breakdown = card.score_breakdown;
+                          return (
+                            [
+                              "designation_score",
+                              "company_size_score",
+                              "industry_fit_score",
+                              "momentum_signal_score",
+                              "remark_signal_score",
+                            ] as const
+                          ).map((key) => (
+                            <span
+                              key={key}
+                              className="inline-block border border-black/15 px-2 py-0.5 text-[11px] uppercase tracking-wide text-black/50"
+                            >
+                              {key.replace(/_score$/, "").replace(/_/g, " ")}: {breakdown[key]}
+                            </span>
+                          ));
+                        })()}
+                      </div>
+                    )}
+                    {card.scored_at && (
+                      <p className="text-black/30 text-xs">
+                        Scored {new Date(card.scored_at).toLocaleString()}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-sm text-black/30">Not scored yet.</p>
+                )}
+                <OBtn
+                  onClick={handleScoreCard}
+                  disabled={isScoring || card.status !== "extracted"}
+                  className="text-xs mt-2"
+                >
+                  {isScoring ? "Scoring…" : card.lead_score != null ? "Re-score Card" : "Score Card"}
+                </OBtn>
+                {scoreError && <p className="text-xs text-red-600 mt-1">{scoreError}</p>}
               </div>
 
               <div className="space-y-1 text-sm">

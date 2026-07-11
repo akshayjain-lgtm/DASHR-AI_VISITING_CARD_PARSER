@@ -14,12 +14,15 @@ from app.schemas.cards import (
     CardOut,
     CardProcessRequest,
     CardProcessResponse,
+    CardScoreRequest,
+    CardScoreResponse,
 )
 from app.services import card_service
 from app.services.exceptions import (
     BatchTooLargeError,
     CardHasMergedChildrenError,
     CardHasNoCompanyError,
+    CardNotEligibleForScoringError,
     CardNotFoundError,
     CardStateChangedError,
     CompanyNotEligibleForEnrichmentError,
@@ -86,6 +89,16 @@ def enrich_companies(
     return CardEnrichResponse(enqueued_count=enqueued, skipped_count=skipped)
 
 
+@router.post("/score", response_model=CardScoreResponse)
+def score_cards(
+    body: CardScoreRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    enqueued, skipped = card_service.enqueue_scoring(db, user, body.card_ids)
+    return CardScoreResponse(enqueued_count=enqueued, skipped_count=skipped)
+
+
 @router.get("", response_model=list[CardOut])
 def list_cards(
     exhibition_id: uuid.UUID | None = None,
@@ -149,6 +162,23 @@ def enrich_company(
     except CompanyNotEligibleForEnrichmentError:
         raise HTTPException(
             status_code=409, detail="Company enrichment has already been started or completed"
+        )
+    return CardOut.model_validate(card_service.to_card_out(db, card))
+
+
+@router.post("/{card_id}/score", response_model=CardOut)
+def score_card(
+    card_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    try:
+        card = card_service.score_card_now(db, user, card_id)
+    except CardNotFoundError:
+        raise HTTPException(status_code=404, detail="Card not found")
+    except CardNotEligibleForScoringError:
+        raise HTTPException(
+            status_code=409, detail="Card must be extracted before it can be scored"
         )
     return CardOut.model_validate(card_service.to_card_out(db, card))
 

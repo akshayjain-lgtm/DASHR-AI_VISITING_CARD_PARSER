@@ -21,6 +21,7 @@ from app.services.exceptions import (
     BatchTooLargeError,
     CardHasMergedChildrenError,
     CardHasNoCompanyError,
+    CardNotEligibleForScoringError,
     CardNotFoundError,
     CardStateChangedError,
     CompanyNotEligibleForEnrichmentError,
@@ -32,6 +33,7 @@ from app.services.exceptions import (
 from app.services.visibility import scope_to_visible_users
 from app.workers.card_processing import process_card
 from app.workers.enrichment_processing import enrich_company_task
+from app.workers.scoring_processing import score_card_task
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +75,17 @@ def _read_limited(file_obj, max_bytes: int) -> bytes:
         if total > max_bytes:
             break
     return b"".join(chunks)
+
+
+def _card_scoring_fields(card: VisitingCard) -> dict:
+    """Shared by to_card_out/list_cards/get_card_detail so the
+    lead_score/score_breakdown/scored_at triple is only ever read off the
+    ORM row in one place."""
+    return {
+        "lead_score": card.lead_score,
+        "score_breakdown": card.score_breakdown,
+        "scored_at": card.scored_at,
+    }
 
 
 def _verify_image_content(data: bytes, content_type: str, filename: str | None) -> None:
@@ -241,6 +254,7 @@ def list_cards(
             "company_id": c.company_id,
             "company_name": company_name,
             "company_enrichment_status": company_enrichment_status,
+            **_card_scoring_fields(c),
         }
         for c, company_name, company_enrichment_status in rows
     ]
@@ -306,6 +320,7 @@ def to_card_out(db: Session, card: VisitingCard) -> dict:
         "company_id": card.company_id,
         "company_name": company_name,
         "company_enrichment_status": company_enrichment_status,
+        **_card_scoring_fields(card),
     }
 
 
@@ -357,6 +372,7 @@ def get_card_detail(db: Session, current_user: User, card_id: uuid.UUID) -> dict
         "extraction_error": card.extraction_error,
         "merged_into_card_id": card.merged_into_card_id,
         "created_at": card.created_at,
+        **_card_scoring_fields(card),
         "company": {
             "company_id": company.company_id,
             "name": company.name,
@@ -472,6 +488,55 @@ def enqueue_enrichment(
             logger.exception(
                 "Failed to enqueue enrich_company_task for company_id=%s", card.company_id
             )
+        enqueued += 1
+
+    return enqueued, skipped
+
+
+def score_card_now(db: Session, current_user: User, card_id: uuid.UUID) -> VisitingCard:
+    """The explicit "Score Card"/"Re-score Card" CTA — POST /cards/{card_id}/score.
+
+    Re-scoring an already-scored card is allowed and expected (e.g. after
+    enrichment completes) — there is deliberately no "already scored" guard
+    here, unlike enrich_company_now's one-shot-per-company rule.
+    """
+    card = get_visible_card(db, current_user, card_id)
+    if card.status != "extracted":
+        raise CardNotEligibleForScoringError()
+
+    try:
+        score_card_task.delay(str(card.card_id))
+    except Exception:
+        logger.exception("Failed to enqueue score_card_task for card_id=%s", card.card_id)
+
+    return card
+
+
+def enqueue_scoring(
+    db: Session, current_user: User, card_ids: list[uuid.UUID]
+) -> tuple[int, int]:
+    """Bulk counterpart to score_card_now — the "Score Selected" CTA.
+
+    Unlike enqueue_enrichment, there's no company-level dedupe needed here:
+    scoring is purely per-card, so every eligible id enqueues its own task.
+    """
+    enqueued = 0
+    skipped = 0
+    for card_id in card_ids:
+        try:
+            card = get_visible_card(db, current_user, card_id)
+        except CardNotFoundError:
+            skipped += 1
+            continue
+
+        if card.status != "extracted":
+            skipped += 1
+            continue
+
+        try:
+            score_card_task.delay(str(card.card_id))
+        except Exception:
+            logger.exception("Failed to enqueue score_card_task for card_id=%s", card.card_id)
         enqueued += 1
 
     return enqueued, skipped

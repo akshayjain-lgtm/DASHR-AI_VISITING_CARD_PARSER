@@ -47,6 +47,9 @@ const sampleCardDetail: CardDetailOut = {
   extraction_error: null,
   merged_into_card_id: null,
   created_at: "2026-07-01T00:00:00Z",
+  lead_score: null,
+  score_breakdown: null,
+  scored_at: null,
   company: null,
   emails: [],
   phones: [],
@@ -60,6 +63,9 @@ const baseCardFields = {
   job_title: "Manager",
   merged_into_card_id: null,
   created_at: "2026-07-01T00:00:00Z",
+  lead_score: null,
+  score_breakdown: null,
+  scored_at: null,
 } as const;
 
 function makeCard(params: {
