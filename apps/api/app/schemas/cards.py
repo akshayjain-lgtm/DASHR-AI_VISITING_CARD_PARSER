@@ -163,3 +163,11 @@ class CardScoreRequest(BaseModel):
 class CardScoreResponse(BaseModel):
     enqueued_count: int
     skipped_count: int
+
+
+class CardExportRequest(BaseModel):
+    # Same cap as CardEnrichRequest/CardScoreRequest — also bounds the
+    # synchronous, in-request query count in card_service.export_cards (see
+    # its docstring). Don't raise this without re-evaluating whether export
+    # should become a Celery task instead.
+    card_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)

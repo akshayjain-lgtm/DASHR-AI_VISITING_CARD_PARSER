@@ -14,6 +14,7 @@ from app.models.card_email import CardEmail
 from app.models.card_phone import CardPhone
 from app.models.company import Company
 from app.models.company_signals import CompanySignals
+from app.models.exhibition import Exhibition
 from app.models.user import User
 from app.models.visiting_card import VisitingCard
 from app.services import exhibition_service, storage_service
@@ -336,20 +337,29 @@ def get_visible_card(db: Session, current_user: User, card_id: uuid.UUID) -> Vis
     return card
 
 
-def get_card_detail(db: Session, current_user: User, card_id: uuid.UUID) -> dict:
-    card = get_visible_card(db, current_user, card_id)
-    company = db.get(Company, card.company_id) if card.company_id else None
-    signals = db.get(CompanySignals, company.company_id) if company else None
+def _load_emails_and_phones(
+    db: Session, card_id: uuid.UUID
+) -> tuple[list[CardEmail], list[CardPhone]]:
+    """Shared by get_card_detail/_export_row so the "ordered primary-first"
+    CardEmail/CardPhone query lives in exactly one place."""
     emails = db.scalars(
         select(CardEmail)
-        .where(CardEmail.card_id == card.card_id)
+        .where(CardEmail.card_id == card_id)
         .order_by(CardEmail.is_primary.desc())
     ).all()
     phones = db.scalars(
         select(CardPhone)
-        .where(CardPhone.card_id == card.card_id)
+        .where(CardPhone.card_id == card_id)
         .order_by(CardPhone.is_primary.desc())
     ).all()
+    return emails, phones
+
+
+def get_card_detail(db: Session, current_user: User, card_id: uuid.UUID) -> dict:
+    card = get_visible_card(db, current_user, card_id)
+    company = db.get(Company, card.company_id) if card.company_id else None
+    signals = db.get(CompanySignals, company.company_id) if company else None
+    emails, phones = _load_emails_and_phones(db, card.card_id)
 
     return {
         "card_id": card.card_id,
@@ -403,6 +413,109 @@ def get_card_detail(db: Session, current_user: User, card_id: uuid.UUID) -> dict
             }
             for p in phones
         ],
+    }
+
+
+def export_cards(db: Session, current_user: User, card_ids: list[uuid.UUID]) -> list[dict]:
+    """Best-effort batch read for POST /cards/export. Ids not visible to
+    current_user (wrong owner, different org, or nonexistent) are silently
+    dropped rather than raising.
+
+    The visibility check and the Company/CompanySignals/Exhibition lookups
+    are all batched into one query each — none of those are 1:many off
+    VisitingCard, so batching them carries no row-fan-out risk regardless of
+    how many ids are requested. Only CardEmail/CardPhone stay a per-card
+    query (via _load_emails_and_phones, shared with get_card_detail): a
+    joined 1:many query there would fan the row count out by every
+    email/phone combination per card, which is far more error-prone to
+    de-duplicate correctly than the handful of extra queries this costs at
+    the 200-id cap CardExportRequest already enforces.
+    """
+    cards = db.scalars(
+        scope_to_visible_users(select(VisitingCard), current_user, VisitingCard.user_id).where(
+            VisitingCard.card_id.in_(card_ids)
+        )
+    ).all()
+    cards_by_id = {c.card_id: c for c in cards}
+    # Preserves the caller's requested order (the DB's return order for an
+    # IN(...) query is unspecified) and silently drops any id that wasn't
+    # visible/found — the "best-effort" contract POST /cards/export promises.
+    ordered_cards = [cards_by_id[cid] for cid in card_ids if cid in cards_by_id]
+    if not ordered_cards:
+        return []
+
+    company_ids = {c.company_id for c in ordered_cards if c.company_id}
+    exhibition_ids = {c.exhibition_id for c in ordered_cards if c.exhibition_id}
+
+    companies_by_id = (
+        {c.company_id: c for c in db.scalars(select(Company).where(Company.company_id.in_(company_ids))).all()}
+        if company_ids
+        else {}
+    )
+    signals_by_company_id = (
+        {
+            s.company_id: s
+            for s in db.scalars(
+                select(CompanySignals).where(CompanySignals.company_id.in_(company_ids))
+            ).all()
+        }
+        if company_ids
+        else {}
+    )
+    exhibitions_by_id = (
+        {
+            e.exhibition_id: e
+            for e in db.scalars(
+                select(Exhibition).where(Exhibition.exhibition_id.in_(exhibition_ids))
+            ).all()
+        }
+        if exhibition_ids
+        else {}
+    )
+
+    rows: list[dict] = []
+    for card in ordered_cards:
+        company = companies_by_id.get(card.company_id) if card.company_id else None
+        signals = signals_by_company_id.get(company.company_id) if company else None
+        exhibition = exhibitions_by_id.get(card.exhibition_id) if card.exhibition_id else None
+        emails, phones = _load_emails_and_phones(db, card.card_id)
+        rows.append(_export_row(card, company, signals, exhibition, emails, phones))
+    return rows
+
+
+def _export_row(
+    card: VisitingCard,
+    company: Company | None,
+    signals: CompanySignals | None,
+    exhibition: Exhibition | None,
+    emails: list[CardEmail],
+    phones: list[CardPhone],
+) -> dict:
+    """Pure assembler — turns already-loaded rows into the dict shape
+    export_service.build_csv expects. No DB access itself; export_cards does
+    all the loading (batched wherever the data shape allows it)."""
+    return {
+        "full_name": card.full_name,
+        "job_title": card.job_title,
+        "company_name": company.name if company else None,
+        "industry": company.industry if company else None,
+        "employee_count": signals.linkedin_employee_count if signals else None,
+        "revenue_band": signals.estimated_revenue_band if signals else None,
+        "emails": [{"email": e.email, "is_primary": e.is_primary} for e in emails],
+        "phones": [
+            {"phone": p.phone_e164 or p.phone_raw, "is_primary": p.is_primary}
+            for p in phones
+        ],
+        "website": card.website,
+        "address": card.address,
+        "gst_number": card.gst_number,
+        "products_offered": card.products_offered,
+        "designation_level": card.designation_level,
+        "lead_score": float(card.lead_score) if card.lead_score is not None else None,
+        "special_remark": card.special_remark,
+        "exhibition_name": exhibition.name if exhibition else None,
+        "status": card.status,
+        "scanned_on": card.created_at,
     }
 
 
