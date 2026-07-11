@@ -42,6 +42,15 @@ class CardOut(BaseModel):
     # Mirrors Company.enrichment_status; null when the card has no linked
     # company yet. "pending" | "enriching" | "enriched" | "not_found" | "failed"
     company_enrichment_status: str | None
+    # float, not Decimal — VisitingCard.lead_score is Numeric at the ORM
+    # layer, but Pydantic v2 serializes Decimal fields to JSON strings by
+    # default; declaring float here makes from_attributes coerce it to a
+    # real JSON number instead, matching the frontend's `number | null` type.
+    lead_score: float | None
+    # {designation_score, company_size_score, industry_fit_score,
+    # momentum_signal_score, remark_signal_score, total, version}; null until scored
+    score_breakdown: dict[str, int | str] | None
+    scored_at: datetime | None
 
 
 class CardCompanyOut(BaseModel):
@@ -102,6 +111,9 @@ class CardDetailOut(BaseModel):
     extraction_error: str | None
     merged_into_card_id: uuid.UUID | None
     created_at: datetime
+    lead_score: float | None
+    score_breakdown: dict[str, int | str] | None
+    scored_at: datetime | None
     company: CardCompanyOut | None
     emails: list[CardEmailOut]
     phones: list[CardPhoneOut]
@@ -132,9 +144,22 @@ class CardProcessResponse(BaseModel):
 
 
 class CardEnrichRequest(BaseModel):
-    card_ids: list[uuid.UUID] = Field(min_length=1)
+    # max_length matches settings.max_bulk_upload_files — a caller-picked
+    # selection can never legitimately exceed the largest batch that could
+    # have been uploaded, and this caps how many Celery tasks/DB lookups one
+    # request can trigger.
+    card_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
 
 
 class CardEnrichResponse(BaseModel):
+    enqueued_count: int
+    skipped_count: int
+
+
+class CardScoreRequest(BaseModel):
+    card_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+
+
+class CardScoreResponse(BaseModel):
     enqueued_count: int
     skipped_count: int

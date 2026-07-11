@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { UploadCloud, X, CheckCircle2, AlertCircle, Trash2, Sparkles, Loader2 } from "lucide-react";
+import { UploadCloud, X, CheckCircle2, AlertCircle, Trash2, Sparkles, Target, Loader2 } from "lucide-react";
 import { Sidebar } from "@/components/sidebar";
 import { OBtn, GBtn } from "@/components/buttons";
 import { CardDetailDrawer } from "@/components/card-detail-drawer";
@@ -14,11 +14,14 @@ import {
   listCards,
   listExhibitions,
   processCards,
+  scoreCard,
+  scoreCards,
   uploadCards,
   type CardOut,
   type ExhibitionOut,
 } from "@/lib/api";
 import { deleteConfirmCopy, useDeleteCardConfirm } from "@/lib/use-delete-card-confirm";
+import { useCardSelection } from "@/lib/use-card-selection";
 
 export default function UploadPage() {
   const [exhibitions, setExhibitions] = useState<ExhibitionOut[]>([]);
@@ -41,11 +44,21 @@ export default function UploadPage() {
   const [isParsing, setIsParsing] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
 
-  const [selectedCardIds, setSelectedCardIds] = useState<Set<string>>(new Set());
   const [isEnriching, setIsEnriching] = useState(false);
   const [enrichError, setEnrichError] = useState<string | null>(null);
   const [rowEnrichingIds, setRowEnrichingIds] = useState<Set<string>>(new Set());
   const [rowEnrichError, setRowEnrichError] = useState<string | null>(null);
+
+  const [isScoring, setIsScoring] = useState(false);
+  const [scoreError, setScoreError] = useState<string | null>(null);
+  const [rowScoringIds, setRowScoringIds] = useState<Set<string>>(new Set());
+  const [rowScoreError, setRowScoreError] = useState<string | null>(null);
+  // scored_at each row-scoring card had at the moment it was kicked off, so
+  // the completion-detection effect below can tell "still scoring" (no
+  // fresh scored_at yet) apart from "actually finished" (scored_at moved).
+  const [rowScoringStartedAt, setRowScoringStartedAt] = useState<Map<string, string | null>>(
+    new Map()
+  );
 
   useEffect(() => {
     listExhibitions().then(setExhibitions);
@@ -72,15 +85,8 @@ export default function UploadPage() {
     refreshCards();
   }, [selectedExhibitionId, uploadedCount]);
 
-  // Drop any selected id that no longer appears in the list (e.g. deleted or
-  // folded into another card via merge) so the selection never silently
-  // references a card that's gone.
-  useEffect(() => {
-    setSelectedCardIds((prev) => {
-      const next = new Set([...prev].filter((id) => cards.some((c) => c.card_id === id)));
-      return next.size === prev.size ? prev : next;
-    });
-  }, [cards]);
+  const { selectedCardIds, allSelected, toggleSelectAll, toggleCardSelected, clearSelection } =
+    useCardSelection(cards);
 
   const hasInFlightCards = cards.some(
     (c) => c.status === "new" || c.status === "processing"
@@ -92,20 +98,9 @@ export default function UploadPage() {
   const enrichEligibleSelected = cards.filter(
     (c) => selectedCardIds.has(c.card_id) && c.company_enrichment_status === "pending"
   );
-  const allSelected = cards.length > 0 && cards.every((c) => selectedCardIds.has(c.card_id));
-
-  function toggleSelectAll() {
-    setSelectedCardIds(allSelected ? new Set() : new Set(cards.map((c) => c.card_id)));
-  }
-
-  function toggleCardSelected(cardId: string) {
-    setSelectedCardIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(cardId)) next.delete(cardId);
-      else next.add(cardId);
-      return next;
-    });
-  }
+  const scoreEligibleSelected = cards.filter(
+    (c) => selectedCardIds.has(c.card_id) && c.status === "extracted"
+  );
 
   useEffect(() => {
     if (!hasInFlightCards) return;
@@ -113,6 +108,56 @@ export default function UploadPage() {
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasInFlightCards, selectedExhibitionId]);
+
+  // Keeps polling while any row's "Score card" spinner is showing, so the
+  // completion-detection effect below eventually sees the card's real
+  // scored_at land (scoring runs async in a Celery worker, not inline in
+  // the POST /score response).
+  useEffect(() => {
+    if (rowScoringIds.size === 0) return;
+    const interval = setInterval(refreshCards, 2000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rowScoringIds.size, selectedExhibitionId]);
+
+  // The Score Card spinner stays on a row until its scored_at actually
+  // changes from what it was when scoring was kicked off (or the card
+  // disappears, e.g. deleted mid-score) — not just until the enqueue POST
+  // resolves, since that only confirms the task was queued, not finished.
+  useEffect(() => {
+    setRowScoringIds((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Set(prev);
+      let changed = false;
+      for (const id of prev) {
+        const card = cards.find((c) => c.card_id === id);
+        const startedAt = rowScoringStartedAt.get(id) ?? null;
+        if (!card || (card.scored_at != null && card.scored_at !== startedAt)) {
+          next.delete(id);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cards]);
+
+  // Prunes rowScoringStartedAt entries once their row leaves rowScoringIds,
+  // so the map doesn't grow unbounded across a long session.
+  useEffect(() => {
+    setRowScoringStartedAt((prev) => {
+      if (prev.size === 0) return prev;
+      let changed = false;
+      const next = new Map(prev);
+      for (const id of prev.keys()) {
+        if (!rowScoringIds.has(id)) {
+          next.delete(id);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [rowScoringIds]);
 
   function addFiles(newFiles: FileList | File[]) {
     setFiles((prev) => [...prev, ...Array.from(newFiles)]);
@@ -169,7 +214,7 @@ export default function UploadPage() {
         exhibitionId: isRealExhibitionSelected ? selectedExhibitionId : undefined,
         cardIds: parseEligibleSelected.map((c) => c.card_id),
       });
-      setSelectedCardIds(new Set());
+      clearSelection();
       await refreshCards();
     } catch (err) {
       setParseError(err instanceof ApiError ? err.message : "Failed to start parsing");
@@ -183,7 +228,7 @@ export default function UploadPage() {
     setEnrichError(null);
     try {
       await enrichCompanies(enrichEligibleSelected.map((c) => c.card_id));
-      setSelectedCardIds(new Set());
+      clearSelection();
       await refreshCards();
     } catch (err) {
       setEnrichError(err instanceof ApiError ? err.message : "Failed to start enrichment");
@@ -202,6 +247,43 @@ export default function UploadPage() {
       setRowEnrichError(err instanceof ApiError ? err.message : "Failed to start enrichment");
     } finally {
       setRowEnrichingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(cardId);
+        return next;
+      });
+    }
+  }
+
+  async function handleScoreCards() {
+    setIsScoring(true);
+    setScoreError(null);
+    try {
+      await scoreCards(scoreEligibleSelected.map((c) => c.card_id));
+      clearSelection();
+      await refreshCards();
+    } catch (err) {
+      setScoreError(err instanceof ApiError ? err.message : "Failed to start scoring");
+    } finally {
+      setIsScoring(false);
+    }
+  }
+
+  async function handleRowScore(cardId: string) {
+    setRowScoreError(null);
+    const priorScoredAt = cards.find((c) => c.card_id === cardId)?.scored_at ?? null;
+    setRowScoringStartedAt((prev) => new Map(prev).set(cardId, priorScoredAt));
+    setRowScoringIds((prev) => new Set(prev).add(cardId));
+    try {
+      await scoreCard(cardId);
+      // Do NOT clear rowScoringIds here — the row's spinner stays on until
+      // the completion-detection effect above observes a new scored_at,
+      // since this call only confirms the task was enqueued, not finished.
+      // Still refresh once immediately so a fast score doesn't wait for the
+      // next 2s poll tick.
+      await refreshCards();
+    } catch (err) {
+      setRowScoreError(err instanceof ApiError ? err.message : "Failed to start scoring");
+      setRowScoringIds((prev) => {
         const next = new Set(prev);
         next.delete(cardId);
         return next;
@@ -371,7 +453,12 @@ export default function UploadPage() {
                 : "in general capture"}
             </h2>
             {cards.length > 0 && (
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-3">
+                {/* Parse is the mandatory first pipeline step every card
+                    needs, so it stays the one solid/primary action. Enrich
+                    and Score are later, optional-per-card stages — outlined
+                    so three buttons in a row read as one primary + two
+                    secondary actions instead of three equally loud CTAs. */}
                 <OBtn
                   onClick={handleParseCards}
                   disabled={isParsing || parseEligibleSelected.length === 0}
@@ -379,13 +466,22 @@ export default function UploadPage() {
                 >
                   {isParsing ? "Starting…" : `Parse Selected (${parseEligibleSelected.length})`}
                 </OBtn>
-                <OBtn
-                  onClick={handleEnrichCards}
-                  disabled={isEnriching || enrichEligibleSelected.length === 0}
-                  className="text-xs"
-                >
-                  {isEnriching ? "Starting…" : `Enrich Selected (${enrichEligibleSelected.length})`}
-                </OBtn>
+                <div className="flex items-center gap-2 border-l border-black/10 pl-3">
+                  <GBtn
+                    onClick={handleEnrichCards}
+                    disabled={isEnriching || enrichEligibleSelected.length === 0}
+                    className="text-xs"
+                  >
+                    {isEnriching ? "Starting…" : `Enrich Selected (${enrichEligibleSelected.length})`}
+                  </GBtn>
+                  <GBtn
+                    onClick={handleScoreCards}
+                    disabled={isScoring || scoreEligibleSelected.length === 0}
+                    className="text-xs"
+                  >
+                    {isScoring ? "Starting…" : `Score Selected (${scoreEligibleSelected.length})`}
+                  </GBtn>
+                </div>
               </div>
             )}
           </div>
@@ -408,6 +504,20 @@ export default function UploadPage() {
             <div className="mb-3 border border-red-200 bg-red-50 px-4 py-3 flex items-start gap-2 text-sm text-red-700">
               <AlertCircle size={15} className="shrink-0 mt-0.5" />
               {rowEnrichError}
+            </div>
+          )}
+
+          {scoreError && (
+            <div className="mb-3 border border-red-200 bg-red-50 px-4 py-3 flex items-start gap-2 text-sm text-red-700">
+              <AlertCircle size={15} className="shrink-0 mt-0.5" />
+              {scoreError}
+            </div>
+          )}
+
+          {rowScoreError && (
+            <div className="mb-3 border border-red-200 bg-red-50 px-4 py-3 flex items-start gap-2 text-sm text-red-700">
+              <AlertCircle size={15} className="shrink-0 mt-0.5" />
+              {rowScoreError}
             </div>
           )}
 
@@ -436,6 +546,7 @@ export default function UploadPage() {
               const isRowEnriching =
                 rowEnrichingIds.has(card.card_id) ||
                 card.company_enrichment_status === "enriching";
+              const isRowScoring = rowScoringIds.has(card.card_id);
               return (
                 <div
                   key={card.card_id}
@@ -460,6 +571,10 @@ export default function UploadPage() {
                   ) : card.status === "merged" || card.status === "duplicate" ? (
                     <span className="inline-block w-fit border border-amber-200 bg-amber-50 text-amber-700 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide">
                       {card.status === "merged" ? "Merged (back side)" : "Duplicate"}
+                    </span>
+                  ) : card.lead_score != null ? (
+                    <span className="inline-block w-fit border border-blue-200 bg-blue-50 text-blue-700 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide">
+                      Scored
                     </span>
                   ) : card.company_enrichment_status === "enriched" ? (
                     <span className="inline-block w-fit border border-green-200 bg-green-50 text-green-700 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide">
@@ -492,6 +607,25 @@ export default function UploadPage() {
                         size={14}
                         className="animate-spin text-black/30"
                         aria-label="Enriching company"
+                      />
+                    )}
+                    {card.status === "extracted" && !isRowScoring && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRowScore(card.card_id);
+                        }}
+                        className="text-black/30 hover:text-[#E65527]"
+                        aria-label="Score card"
+                      >
+                        <Target size={14} />
+                      </button>
+                    )}
+                    {isRowScoring && (
+                      <Loader2
+                        size={14}
+                        className="animate-spin text-black/30"
+                        aria-label="Scoring card"
                       />
                     )}
                     <button

@@ -49,6 +49,9 @@ const sampleCardDetail: CardDetailOut = {
   extraction_error: null,
   merged_into_card_id: null,
   created_at: "2026-07-01T00:00:00Z",
+  lead_score: null,
+  score_breakdown: null,
+  scored_at: null,
   company: null,
   emails: [],
   phones: [],
@@ -68,6 +71,9 @@ const sampleCard: CardOut = {
   company_id: null,
   company_name: null,
   company_enrichment_status: null,
+  lead_score: null,
+  score_breakdown: null,
+  scored_at: null,
 };
 
 const sampleExhibitions: ExhibitionOut[] = [];

@@ -104,3 +104,11 @@ class CardStateChangedError(Exception):
     new child onto this card between the children lookup and the commit,
     causing the self-referencing merged_into_card_id FK to reject the delete
     at commit time. The caller should retry the request."""
+
+
+class CardNotEligibleForScoringError(Exception):
+    """Raised by POST /cards/{card_id}/score when the card's status isn't
+    'extracted' — scoring requires a card to have finished parsing.
+    Re-scoring an already-scored 'extracted' card is allowed (no "already
+    scored" guard); this only blocks cards still 'new'/'processing'/
+    'failed'/'merged'/'duplicate'."""
