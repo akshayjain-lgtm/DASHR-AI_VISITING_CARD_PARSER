@@ -7,7 +7,7 @@ import { Sidebar } from "@/components/sidebar";
 import { OBtn } from "@/components/buttons";
 import { CardDetailDrawer } from "@/components/card-detail-drawer";
 import { getCurrentUser } from "@/lib/auth";
-import { ApiError, listCards, scoreCards, type CardOut, type UserOut } from "@/lib/api";
+import { ApiError, exportCards, listCards, scoreCards, type CardOut, type UserOut } from "@/lib/api";
 import { useCardSelection } from "@/lib/use-card-selection";
 
 function ScoreBadge({ score }: { score: number }) {
@@ -46,6 +46,8 @@ export default function Dashboard() {
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [isScoring, setIsScoring] = useState(false);
   const [scoreError, setScoreError] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const { selectedCardIds, allSelected, toggleSelectAll, toggleCardSelected, clearSelection } =
     useCardSelection(cards);
@@ -86,6 +88,18 @@ export default function Dashboard() {
       setScoreError(err instanceof ApiError ? err.message : "Failed to start scoring");
     } finally {
       setIsScoring(false);
+    }
+  }
+
+  async function handleExportCards() {
+    setIsExporting(true);
+    setExportError(null);
+    try {
+      await exportCards([...selectedCardIds]);
+    } catch (err) {
+      setExportError(err instanceof ApiError ? err.message : "Failed to export cards");
+    } finally {
+      setIsExporting(false);
     }
   }
 
@@ -147,19 +161,34 @@ export default function Dashboard() {
             </button>
             <div className="flex-1" />
             {cards.length > 0 && (
-              <OBtn
-                onClick={handleScoreCards}
-                disabled={isScoring || scoreEligibleSelected.length === 0}
-                className="text-xs"
-              >
-                {isScoring ? "Starting…" : `Score Selected (${scoreEligibleSelected.length})`}
-              </OBtn>
+              <>
+                <OBtn
+                  onClick={handleScoreCards}
+                  disabled={isScoring || scoreEligibleSelected.length === 0}
+                  className="text-xs"
+                >
+                  {isScoring ? "Starting…" : `Score Selected (${scoreEligibleSelected.length})`}
+                </OBtn>
+                <OBtn
+                  onClick={handleExportCards}
+                  disabled={isExporting || selectedCardIds.size === 0}
+                  className="text-xs"
+                >
+                  {isExporting ? "Exporting…" : `Export CSV (${selectedCardIds.size})`}
+                </OBtn>
+              </>
             )}
           </div>
 
           {scoreError && (
             <div className="border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
               {scoreError}
+            </div>
+          )}
+
+          {exportError && (
+            <div className="border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {exportError}
             </div>
           )}
 

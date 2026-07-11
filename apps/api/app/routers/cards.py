@@ -1,6 +1,8 @@
 import uuid
+from datetime import date
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.deps import get_current_user, get_db
@@ -11,13 +13,14 @@ from app.schemas.cards import (
     CardDetailOut,
     CardEnrichRequest,
     CardEnrichResponse,
+    CardExportRequest,
     CardOut,
     CardProcessRequest,
     CardProcessResponse,
     CardScoreRequest,
     CardScoreResponse,
 )
-from app.services import card_service
+from app.services import card_service, export_service
 from app.services.exceptions import (
     BatchTooLargeError,
     CardHasMergedChildrenError,
@@ -97,6 +100,22 @@ def score_cards(
 ):
     enqueued, skipped = card_service.enqueue_scoring(db, user, body.card_ids)
     return CardScoreResponse(enqueued_count=enqueued, skipped_count=skipped)
+
+
+@router.post("/export")
+def export_cards(
+    body: CardExportRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    rows = card_service.export_cards(db, user, body.card_ids)
+    csv_text = export_service.build_csv(rows)
+    filename = f"dashr-leads-{date.today().isoformat()}.csv"
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("", response_model=list[CardOut])

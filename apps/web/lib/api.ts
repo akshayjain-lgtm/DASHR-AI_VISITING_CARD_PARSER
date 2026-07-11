@@ -346,6 +346,38 @@ export function scoreCards(
   });
 }
 
+// Not routed through request() — the response is a CSV file, not JSON
+// (mirrors deleteCard's dedicated-fetch pattern for a response shape the
+// generic helper doesn't cover). Triggers a real browser download via a
+// temporary anchor element instead of returning the CSV text to the caller.
+export async function exportCards(cardIds: string[]): Promise<void> {
+  const res = await fetch(`${API_URL}/cards/export`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ card_ids: cardIds }),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, extractErrorMessage(body));
+  }
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  // The server's Content-Disposition filename isn't readable here — the
+  // CORS middleware has no expose_headers set, so cross-origin JS can't
+  // read it. The filename is rebuilt client-side instead, same
+  // "dashr-leads-<YYYY-MM-DD>.csv" shape as the server sets.
+  link.download = `dashr-leads-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
 export function listCards(
   params: {
     exhibition_id?: string;
