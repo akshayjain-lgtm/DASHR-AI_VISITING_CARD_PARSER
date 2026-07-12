@@ -30,6 +30,8 @@ class SellerProfile(Base):
     revenue_currency: Mapped[str] = mapped_column(server_default=text("'INR'"))
     target_customer_description: Mapped[str | None]
     target_regions: Mapped[str | None]
+    gst_no: Mapped[str | None]
+    billing_address: Mapped[str | None]
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=text("now()")
     )

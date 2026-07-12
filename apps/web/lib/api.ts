@@ -140,6 +140,8 @@ export type SellerProfileOut = {
   revenue_currency: string | null;
   target_customer_description: string | null;
   target_regions: string | null;
+  gst_no: string | null;
+  billing_address: string | null;
   created_at: string | null;
   updated_at: string | null;
 };
@@ -285,6 +287,8 @@ export function updateProfile(data: {
   product_lines?: string;
   target_customer_description?: string;
   target_regions?: string;
+  gst_no?: string;
+  billing_address?: string;
 }): Promise<SellerProfileOut> {
   return request("/profile", { method: "PUT", body: JSON.stringify(data) });
 }

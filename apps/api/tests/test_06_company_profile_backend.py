@@ -40,6 +40,8 @@ FULL_PROFILE_PAYLOAD = {
         "Plant engineers and procurement heads in chemical, pharma, and food processing"
     ),
     "target_regions": "Pan India, Middle East",
+    "gst_no": "27AAAPL1234C1Z5",
+    "billing_address": "Plot 14, MIDC Industrial Area, Pune, Maharashtra 411019",
 }
 
 PROFILE_OUT_FIELDS = [
@@ -50,6 +52,8 @@ PROFILE_OUT_FIELDS = [
     "revenue_currency",
     "target_customer_description",
     "target_regions",
+    "gst_no",
+    "billing_address",
 ]
 
 
@@ -427,3 +431,73 @@ def test_put_profile_ignores_client_supplied_profile_id(client, fake_otp_provide
             "if the request is accepted, it must still operate on the caller's own "
             "existing row, identified by its real profile_id"
         )
+
+
+# --------------------------------------------------------------------------
+# 12. gst_no / billing_address are optional, never required (spec addendum:
+#     neither field is ever a precondition for saving a profile, or — later —
+#     for generating an Invoice).
+# --------------------------------------------------------------------------
+
+
+def test_put_profile_without_gst_no_or_billing_address_still_succeeds(client, fake_otp_provider):
+    create_verified_user(client, fake_otp_provider)
+    payload = {
+        k: v for k, v in FULL_PROFILE_PAYLOAD.items() if k not in ("gst_no", "billing_address")
+    }
+
+    resp = client.put("/profile", json=payload)
+
+    assert resp.status_code == 200, (
+        f"gst_no/billing_address must be optional — a PUT omitting both must still "
+        f"succeed, got {resp.status_code}: {resp.text}"
+    )
+    body = resp.json()
+    assert body["profile_id"] is not None
+    assert body["gst_no"] is None
+    assert body["billing_address"] is None
+
+    get_resp = client.get("/profile")
+    assert get_resp.status_code == 200, get_resp.text
+    assert get_resp.json()["gst_no"] is None
+    assert get_resp.json()["billing_address"] is None
+
+
+# --------------------------------------------------------------------------
+# 13. Submitting "" for gst_no/billing_address clears a previously-saved
+#     value — distinct from omitting the key, which leaves it unchanged
+#     (spec: "Submitting gst_no/billing_address as an empty string is a
+#     valid way to clear a previously-saved value"). This matters for
+#     future Invoice correctness: a seller must be able to blank out a
+#     stale GSTIN/address, not just add one.
+# --------------------------------------------------------------------------
+
+
+def test_put_profile_empty_string_clears_previously_saved_gst_no_and_billing_address(
+    client, fake_otp_provider
+):
+    create_verified_user(client, fake_otp_provider)
+    first = client.put("/profile", json=FULL_PROFILE_PAYLOAD)
+    assert first.status_code == 200, first.text
+    assert first.json()["gst_no"] == FULL_PROFILE_PAYLOAD["gst_no"]
+    assert first.json()["billing_address"] == FULL_PROFILE_PAYLOAD["billing_address"]
+
+    second = client.put("/profile", json={"gst_no": "", "billing_address": ""})
+
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["gst_no"] == "", (
+        "submitting an empty string for gst_no must clear the previously-saved "
+        "value, not leave it unchanged or reject the request"
+    )
+    assert body["billing_address"] == "", (
+        "submitting an empty string for billing_address must clear the "
+        "previously-saved value, not leave it unchanged or reject the request"
+    )
+    # Every other field, which this PUT omitted entirely, must be untouched.
+    assert body["company_name"] == FULL_PROFILE_PAYLOAD["company_name"]
+
+    get_resp = client.get("/profile")
+    assert get_resp.status_code == 200, get_resp.text
+    assert get_resp.json()["gst_no"] == ""
+    assert get_resp.json()["billing_address"] == ""
