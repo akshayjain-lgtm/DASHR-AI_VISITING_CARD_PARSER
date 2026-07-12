@@ -3,6 +3,7 @@
 ## Overview
 This step extends the bulk-capture stage (step 04) with a second intake path: instead of selecting dozens or hundreds of individual card photos, a seller can hand DASHR AI a single ZIP archive of card images or a single scanned PDF (one card per page) from an exhibition. The archive is accepted and validated synchronously, then expanded into individual `VisitingCard` rows asynchronously via a Celery task — each resulting card flows through the existing extraction/enrichment/scoring pipeline exactly as if it had been uploaded as a standalone image. This does not replace the existing multi-file image upload; both are offered from the same "Choose Files"/drag-drop control on the Upload page, split by file type.
 
+
 ## Depends on
 - **04 — Visiting card bulk upload**: reuses `VisitingCard`, `upload_batch_id`/`batch_sequence`, and the storage/upload conventions established there. Archive expansion creates the same kind of `VisitingCard` rows (`status="new"`) that bulk image upload does.
 - **05 — Parsing visiting card**: cards created from an archive are picked up by the existing "Parse Cards" action exactly like directly-uploaded cards; no changes to extraction itself.
