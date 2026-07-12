@@ -5,6 +5,7 @@ import {
   LayoutDashboard,
   Upload,
   Building2,
+  Wallet,
   Settings,
   LogOut,
 } from "lucide-react";
@@ -15,6 +16,7 @@ const NAV = [
   { id: "dashboard", label: "Leads", icon: LayoutDashboard, path: "/dashboard" },
   { id: "upload", label: "Upload", icon: Upload, path: "/upload" },
   { id: "profile", label: "Company Profile", icon: Building2, path: "/profile" },
+  { id: "wallet", label: "Wallet", icon: Wallet, path: "/wallet" },
   { id: "home", label: "Settings", icon: Settings, path: "/" },
 ];
 
