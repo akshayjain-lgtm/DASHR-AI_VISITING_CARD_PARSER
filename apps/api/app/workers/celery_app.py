@@ -7,6 +7,7 @@ celery_app = Celery(
     broker=settings.redis_url,
     backend=settings.redis_url,
     include=[
+        "app.workers.archive_processing",
         "app.workers.card_processing",
         "app.workers.enrichment_processing",
         "app.workers.scoring_processing",

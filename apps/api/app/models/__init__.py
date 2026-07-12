@@ -1,3 +1,4 @@
+from app.models.archive_upload import ArchiveUpload
 from app.models.card_email import CardEmail
 from app.models.card_phone import CardPhone
 from app.models.company import Company
@@ -22,4 +23,5 @@ __all__ = [
     "CardEmail",
     "CompanyEnrichment",
     "PhoneOtpVerification",
+    "ArchiveUpload",
 ]

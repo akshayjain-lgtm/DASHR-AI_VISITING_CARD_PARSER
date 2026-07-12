@@ -236,6 +236,32 @@ export type BulkUploadResponse = {
   }[];
 };
 
+export type ArchiveUploadOut = {
+  archive_id: string;
+  exhibition_id: string | null;
+  original_filename: string | null;
+  // "zip" | "pdf"
+  container_type: string;
+  // "processing" | "completed" | "completed_with_errors" | "failed"
+  status: string;
+  error_message: string | null;
+  created_at: string;
+};
+
+export function uploadArchive(
+  exhibitionId: string | null,
+  file: File
+): Promise<ArchiveUploadOut> {
+  const formData = new FormData();
+  if (exhibitionId) formData.append("exhibition_id", exhibitionId);
+  formData.append("file", file);
+  return requestMultipart("/archive-uploads", formData);
+}
+
+export function getArchiveUpload(archiveId: string): Promise<ArchiveUploadOut> {
+  return request(`/archive-uploads/${archiveId}`);
+}
+
 export function listExhibitions(): Promise<ExhibitionOut[]> {
   return request("/exhibitions");
 }
