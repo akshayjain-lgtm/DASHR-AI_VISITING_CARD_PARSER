@@ -15,9 +15,12 @@ implementation of `services/scoring.py` or `workers/scoring_processing.py`:
 - Scoring is never auto-triggered — the sole triggers are the explicit
   `POST /cards/{card_id}/score` (single) and `POST /cards/score` (bulk, a
   best-effort skip-and-count over a caller-picked selection) endpoints.
-- Re-scoring an already-scored, still-`extracted` card is allowed (no
-  "already scored" guard) — this is how a seller picks up new
-  `CompanySignals` data after running enrichment.
+- Scoring is one-shot per card: once `lead_score` is set, re-scoring is
+  rejected, not allowed. `POST /cards/{card_id}/score` on an already-scored
+  card returns 409 (`CardAlreadyScoredError`); the bulk endpoint silently
+  skips it. `score_card_task` itself also re-checks this on every attempt,
+  as defense-in-depth against two enqueues racing past the service-layer
+  check.
 - A card with no linked company (`company_id is None`) must still score
   successfully, with the three company-derived components at 0.
 
@@ -28,11 +31,7 @@ tests patch `app.services.card_service.score_card_task.delay` (mirroring that
 file's `_patch_enrich_delay`) to assert enqueue/skip behavior without a real
 Celery worker. Vision extraction is mocked via
 `app.services.vision_client.extract_card_fields`, matching every other test
-file's convention. The one cross-feature test (re-scoring after enrichment)
-reuses `enrich_company_task` directly with a monkeypatched
-`firmographics_provider` factory and a monkeypatched Anthropic summary
-client, mirroring `test_07_data_enrichment.py`'s own patterns rather than
-importing them cross-module.
+file's convention.
 
 Judgment calls made in the absence of explicit spec text:
   1. **Distinct company names per test** — `companies` is not truncated by
@@ -414,37 +413,33 @@ def test_bulk_score_endpoint_skips_ineligible_and_foreign_cards(
 
 
 # ==========================================================================
-# 6. Re-scoring after enrichment completes picks up new CompanySignals data.
+# 6. Scoring is one-shot: an already-scored card cannot be re-scored, even
+#    via the task directly, the single endpoint, or the bulk endpoint.
 # ==========================================================================
 
 
-def test_rescoring_after_enrichment_picks_up_new_company_signals(
+def test_score_card_task_is_a_noop_against_an_already_scored_card(
     client, fake_otp_provider, db_session, jpeg_bytes, monkeypatch
 ):
-    """DoD: 'Re-scoring an already-scored card ... updates lead_score/
-    score_breakdown/scored_at to reflect the newly available company
-    signals ... company_size_score ... visibly change between the pre- and
-    post-enrichment scores.'"""
+    """Direct-task-call analog of the one-shot rule: even bypassing the
+    service layer entirely, a second score_card_task run against an
+    already-scored card must not overwrite lead_score/score_breakdown/
+    scored_at — defense-in-depth against two enqueues racing past the
+    card_service eligibility check."""
     _authenticated_user(client, fake_otp_provider)
     card_id = _upload_one(client, jpeg_bytes)
-    company_name = _unique_company_name("Pre Enrichment Co")
-    _patch_vision(monkeypatch, _fields(full_name="Pre Enrichment Contact", company_name=company_name))
+    company_name = _unique_company_name("Already Scored Co")
+    _patch_vision(monkeypatch, _fields(full_name="Already Scored Contact", company_name=company_name))
     process_card(card_id)
-
-    card = db_session.get(VisitingCard, uuid.UUID(card_id))
-    company_id = card.company_id
-    assert company_id is not None
-    company = db_session.get(Company, company_id)
-    assert company.enrichment_status == "pending", "fixture setup: company must start unenriched"
 
     score_card_task(card_id)
     db_session.expire_all()
     first = db_session.get(VisitingCard, uuid.UUID(card_id))
-    assert first.score_breakdown["company_size_score"] == 0, (
-        "no CompanySignals row exists yet — company_size_score must be 0"
-    )
-    first_total = first.lead_score
+    first_score, first_scored_at = first.lead_score, first.scored_at
+    assert first_scored_at is not None
 
+    # Enrichment landing new CompanySignals afterward must not matter — the
+    # card is locked at its first score regardless of what data appears later.
     _patch_summary_client(monkeypatch)
     monkeypatch.setattr(
         "app.services.enrichment_providers.firmographics_provider.get_firmographics_provider",
@@ -452,20 +447,77 @@ def test_rescoring_after_enrichment_picks_up_new_company_signals(
             FirmographicsResult(linkedin_employee_count=600, linkedin_follower_count=5000)
         ),
     )
-    enrich_company_task(str(company_id))
+    enrich_company_task(str(first.company_id))
 
-    db_session.expire_all()
-    assert db_session.get(Company, company_id).enrichment_status == "enriched"
+    score_card_task(card_id)  # second call against an already-scored card
 
-    score_card_task(card_id)
     db_session.expire_all()
     second = db_session.get(VisitingCard, uuid.UUID(card_id))
-    assert second.score_breakdown["company_size_score"] == 25, (
-        "600 LinkedIn employees must now land the top company-size band"
+    assert second.lead_score == first_score
+    assert second.scored_at == first_scored_at
+
+
+def test_score_endpoint_on_already_scored_card_returns_409_and_never_reenqueues(
+    client, fake_otp_provider, db_session, jpeg_bytes, monkeypatch
+):
+    """A card that's already been scored is locked — POST /score on it again
+    must be rejected (409, CardAlreadyScoredError) rather than silently
+    re-scoring, and must never enqueue a second task."""
+    _authenticated_user(client, fake_otp_provider)
+    card_id = _upload_one(client, jpeg_bytes)
+    _patch_vision(
+        monkeypatch,
+        _fields(full_name="Locked Contact", company_name=_unique_company_name("Locked Co")),
     )
-    assert second.lead_score > first_total, (
-        "re-scoring after enrichment must increase the total once company size data exists"
+    process_card(card_id)
+    score_card_task(card_id)
+    db_session.expire_all()
+    before = db_session.get(VisitingCard, uuid.UUID(card_id))
+    before_score, before_scored_at = before.lead_score, before.scored_at
+
+    captured = _patch_score_delay(monkeypatch)
+    resp = client.post(f"/cards/{card_id}/score")
+
+    assert resp.status_code == 409, resp.text
+    assert captured == [], "an already-scored card must never enqueue a second score_card_task"
+
+    db_session.expire_all()
+    after = db_session.get(VisitingCard, uuid.UUID(card_id))
+    assert after.lead_score == before_score
+    assert after.scored_at == before_scored_at
+
+
+def test_bulk_score_endpoint_skips_already_scored_cards(
+    client, fake_otp_provider, db_session, jpeg_bytes, monkeypatch
+):
+    _authenticated_user(client, fake_otp_provider)
+    already_scored_id = _upload_one(client, jpeg_bytes, filename="already-scored.jpg")
+    _patch_vision(
+        monkeypatch,
+        _fields(full_name="Already Scored", company_name=_unique_company_name("Already Scored Co")),
     )
+    process_card(already_scored_id)
+    score_card_task(already_scored_id)
+
+    eligible_card_id = _upload_one(client, jpeg_bytes, filename="fresh-eligible.jpg")
+    _patch_vision(
+        monkeypatch,
+        _fields(full_name="Fresh Eligible", company_name=_unique_company_name("Fresh Eligible Co")),
+    )
+    process_card(eligible_card_id)
+
+    captured = _patch_score_delay(monkeypatch)
+    resp = client.post(
+        "/cards/score",
+        json={"card_ids": [already_scored_id, eligible_card_id]},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["enqueued_count"] == 1
+    assert body["skipped_count"] == 1
+    assert len(captured) == 1
+    assert captured[0][0] == (eligible_card_id,)
 
 
 # ==========================================================================

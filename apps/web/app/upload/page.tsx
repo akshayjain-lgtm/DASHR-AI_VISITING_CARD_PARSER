@@ -75,6 +75,12 @@ export default function UploadPage() {
   const [rowScoringStartedAt, setRowScoringStartedAt] = useState<Map<string, string | null>>(
     new Map()
   );
+  // Snapshot of the card ids kicked off by the *bulk* Score button, so the
+  // progress bar can report "done/total" for that batch specifically —
+  // distinct from rowScoringIds, which also includes single-row scores and
+  // shrinks as each card finishes rather than tracking a fixed batch size.
+  const [bulkScoreTargetIds, setBulkScoreTargetIds] = useState<Set<string> | null>(null);
+  const [bulkScoreTotal, setBulkScoreTotal] = useState<number | null>(null);
 
   useEffect(() => {
     listExhibitions().then(setExhibitions);
@@ -115,7 +121,7 @@ export default function UploadPage() {
     (c) => selectedCardIds.has(c.card_id) && c.company_enrichment_status === "pending"
   );
   const scoreEligibleSelected = cards.filter(
-    (c) => selectedCardIds.has(c.card_id) && c.status === "extracted"
+    (c) => selectedCardIds.has(c.card_id) && c.status === "extracted" && c.lead_score == null
   );
 
   useEffect(() => {
@@ -174,6 +180,20 @@ export default function UploadPage() {
       return changed ? next : prev;
     });
   }, [rowScoringIds]);
+
+  // Bulk scoring reuses rowScoringIds/rowScoringStartedAt for the actual
+  // completion signal (same "scored_at changed" rule as row scoring) — this
+  // effect just watches when every id in the current bulk batch has left
+  // rowScoringIds, and clears the batch snapshot so the progress bar
+  // disappears once the whole batch is done.
+  useEffect(() => {
+    if (!bulkScoreTargetIds) return;
+    const stillScoring = [...bulkScoreTargetIds].some((id) => rowScoringIds.has(id));
+    if (!stillScoring) {
+      setBulkScoreTargetIds(null);
+      setBulkScoreTotal(null);
+    }
+  }, [rowScoringIds, bulkScoreTargetIds]);
 
   // Auto-detects a zip/pdf container vs. a plain card photo, from the same
   // "Choose Files"/drag-drop selection — checked by extension first since
@@ -372,14 +392,36 @@ export default function UploadPage() {
   }
 
   async function handleScoreCards() {
+    const targetIds = scoreEligibleSelected.map((c) => c.card_id);
+    // Feed the same rowScoringIds/rowScoringStartedAt tracking used by
+    // single-row scoring, so each row in the batch also gets its own
+    // spinner, and the bulk progress bar's "done" count derives from the
+    // exact same scored_at-changed completion signal.
+    setRowScoringStartedAt((prev) => {
+      const next = new Map(prev);
+      for (const id of targetIds) {
+        next.set(id, cards.find((c) => c.card_id === id)?.scored_at ?? null);
+      }
+      return next;
+    });
+    setRowScoringIds((prev) => new Set([...prev, ...targetIds]));
+    setBulkScoreTargetIds(new Set(targetIds));
+    setBulkScoreTotal(targetIds.length);
     setIsScoring(true);
     setScoreError(null);
     try {
-      await scoreCards(scoreEligibleSelected.map((c) => c.card_id));
+      await scoreCards(targetIds);
       clearSelection();
       await refreshCards();
     } catch (err) {
       setScoreError(err instanceof ApiError ? err.message : "Failed to start scoring");
+      setRowScoringIds((prev) => {
+        const next = new Set(prev);
+        targetIds.forEach((id) => next.delete(id));
+        return next;
+      });
+      setBulkScoreTargetIds(null);
+      setBulkScoreTotal(null);
     } finally {
       setIsScoring(false);
     }
@@ -658,6 +700,22 @@ export default function UploadPage() {
                   >
                     {isScoring ? "Starting…" : `Score (${scoreEligibleSelected.length})`}
                   </GBtn>
+                  {bulkScoreTargetIds && bulkScoreTotal != null && (() => {
+                    const done = [...bulkScoreTargetIds].filter(
+                      (id) => !rowScoringIds.has(id)
+                    ).length;
+                    return (
+                      <div className="flex items-center gap-1.5 text-[11px] text-black/40">
+                        <div className="w-16 h-1 bg-black/10 overflow-hidden">
+                          <div
+                            className="h-full bg-[#E65527] transition-all"
+                            style={{ width: `${(done / bulkScoreTotal) * 100}%` }}
+                          />
+                        </div>
+                        Scoring {done}/{bulkScoreTotal}
+                      </div>
+                    );
+                  })()}
                 </div>
                 <div className="flex items-center gap-2 border-l border-black/10 pl-3">
                   <DBtn
@@ -802,7 +860,7 @@ export default function UploadPage() {
                         aria-label="Enriching company"
                       />
                     )}
-                    {card.status === "extracted" && !isRowScoring && (
+                    {card.status === "extracted" && card.lead_score == null && !isRowScoring && (
                       <button
                         onClick={(e) => {
                           e.stopPropagation();

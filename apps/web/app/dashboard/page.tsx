@@ -7,7 +7,7 @@ import { Sidebar } from "@/components/sidebar";
 import { OBtn } from "@/components/buttons";
 import { CardDetailDrawer } from "@/components/card-detail-drawer";
 import { getCurrentUser } from "@/lib/auth";
-import { ApiError, exportCards, listCards, scoreCards, type CardOut, type UserOut } from "@/lib/api";
+import { ApiError, exportCards, listCards, type CardOut, type UserOut } from "@/lib/api";
 import { useCardSelection } from "@/lib/use-card-selection";
 
 function ScoreBadge({ score }: { score: number }) {
@@ -44,12 +44,10 @@ export default function Dashboard() {
   const [user, setUser] = useState<UserOut | null>(null);
   const [cards, setCards] = useState<CardOut[]>([]);
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
-  const [isScoring, setIsScoring] = useState(false);
-  const [scoreError, setScoreError] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
 
-  const { selectedCardIds, allSelected, toggleSelectAll, toggleCardSelected, clearSelection } =
+  const { selectedCardIds, allSelected, toggleSelectAll, toggleCardSelected } =
     useCardSelection(cards);
 
   useEffect(() => {
@@ -72,24 +70,6 @@ export default function Dashboard() {
 
   const highCount = cards.filter((c) => c.lead_score != null && c.lead_score >= 80).length;
   const lowCount = cards.filter((c) => c.lead_score != null && c.lead_score < 60).length;
-
-  const scoreEligibleSelected = cards.filter(
-    (c) => selectedCardIds.has(c.card_id) && c.status === "extracted"
-  );
-
-  async function handleScoreCards() {
-    setIsScoring(true);
-    setScoreError(null);
-    try {
-      await scoreCards(scoreEligibleSelected.map((c) => c.card_id));
-      clearSelection();
-      await refreshCards();
-    } catch (err) {
-      setScoreError(err instanceof ApiError ? err.message : "Failed to start scoring");
-    } finally {
-      setIsScoring(false);
-    }
-  }
 
   async function handleExportCards() {
     setIsExporting(true);
@@ -161,30 +141,15 @@ export default function Dashboard() {
             </button>
             <div className="flex-1" />
             {cards.length > 0 && (
-              <>
-                <OBtn
-                  onClick={handleScoreCards}
-                  disabled={isScoring || scoreEligibleSelected.length === 0}
-                  className="text-xs"
-                >
-                  {isScoring ? "Starting…" : `Score (${scoreEligibleSelected.length})`}
-                </OBtn>
-                <OBtn
-                  onClick={handleExportCards}
-                  disabled={isExporting || selectedCardIds.size === 0}
-                  className="text-xs"
-                >
-                  {isExporting ? "Exporting…" : `Export CSV (${selectedCardIds.size})`}
-                </OBtn>
-              </>
+              <OBtn
+                onClick={handleExportCards}
+                disabled={isExporting || selectedCardIds.size === 0}
+                className="text-xs"
+              >
+                {isExporting ? "Exporting…" : `Export CSV (${selectedCardIds.size})`}
+              </OBtn>
             )}
           </div>
-
-          {scoreError && (
-            <div className="border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-              {scoreError}
-            </div>
-          )}
 
           {exportError && (
             <div className="border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
