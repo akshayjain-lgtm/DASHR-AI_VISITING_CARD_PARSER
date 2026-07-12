@@ -12,6 +12,8 @@ type ProfileForm = {
   productLines: string;
   targetBuyer: string;
   salesRegion: string;
+  gstNo: string;
+  billingAddress: string;
 };
 
 const EMPTY_FORM: ProfileForm = {
@@ -20,6 +22,8 @@ const EMPTY_FORM: ProfileForm = {
   productLines: "",
   targetBuyer: "",
   salesRegion: "",
+  gstNo: "",
+  billingAddress: "",
 };
 
 type ProfileApiField =
@@ -27,7 +31,9 @@ type ProfileApiField =
   | "industry"
   | "product_lines"
   | "target_customer_description"
-  | "target_regions";
+  | "target_regions"
+  | "gst_no"
+  | "billing_address";
 
 const FIELDS: {
   label: string;
@@ -41,6 +47,8 @@ const FIELDS: {
   { label: "Product Lines", key: "productLines", apiField: "product_lines", placeholder: "List your key products or solutions…", multi: true },
   { label: "Target Buyer Description", key: "targetBuyer", apiField: "target_customer_description", placeholder: "Describe your ideal buyer role and industry…", multi: true },
   { label: "Sales Region", key: "salesRegion", apiField: "target_regions", placeholder: "States or countries you sell into" },
+  { label: "GST No.", key: "gstNo", apiField: "gst_no", placeholder: "GSTIN (optional)" },
+  { label: "Billing Address", key: "billingAddress", apiField: "billing_address", placeholder: "Billing address for invoices (optional)", multi: true },
 ];
 
 // Both directions are derived from FIELDS so the ProfileForm <-> API field

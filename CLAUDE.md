@@ -93,7 +93,7 @@ dashr-ai/
 
 - What was the "leads page" is the **Dashboard** page: a scored/filterable lead table plus an analytics layer above it (charts/graphs on lead volume, industry mix, score distribution, exhibition performance, etc.) — treat table and analytics as one page, not two separate features
 - The homepage carries public **Privacy Policy** and **Terms of Use** sections/pages — static content, no auth, served from `apps/web/app/(marketing)/`
-- The **profile page** collects each User's GST No. and Billing Address (in addition to standard profile fields) — required so their Invoices can carry correct billing-party details; this is per-User, not a single org-wide setting, since billing is per-user
+- The **profile page** collects each User's GST No. and Billing Address as optional fields on their `SellerProfile` row (in addition to the standard company/product fields) — captured per-User (via the 1:1 `SellerProfile`), not a single org-wide setting, since billing is per-user. Neither is mandatory, at profile-save time or for Invoice generation — an Invoice is issued whether or not either is populated, carrying whatever value (including blank) the `SellerProfile` row holds at issue time
 
 ---
 
@@ -118,7 +118,8 @@ dashr-ai/
 ## Data model essentials
 
 - **Organization** — the tenant; every other table carries an `org_id` for tenant-isolation/data-visibility purposes, even where (as with Wallet/Invoice below) it is not the billing scope
-- **User** — belongs to one Organization, with a role of `admin` or `sub_user`; carries its own GST No. and Billing Address (captured on the profile page) used as the billing party on that user's Invoices
+- **User** — belongs to one Organization, with a role of `admin` or `sub_user`
+- **SellerProfile** — the signed-up seller's own company/product profile (company name, industry, product lines, revenue, target customer/regions), one row per User (1:1, unique `user_id`), used to calibrate lead scoring; also carries that User's GST No. and Billing Address (both optional, never required), used as the billing party on that user's Invoices when present
 - **Exhibition** — a trade show/batch upload event (name, date, location)
 - **Card** — one scanned image + raw OCR output + extraction confidence
 - **Contact** — normalized person fields parsed from a Card (name, title, email, phone)
@@ -140,7 +141,7 @@ dashr-ai/
 - Wallet balance is only ever credited/debited through `billing.py`, and every credit/debit writes a `WalletTransaction` ledger row first — the cached `Wallet.balance` is derived from the ledger, never the other way around
 - Per-action pricing at launch: ₹5 per card parsed, ₹3 per enrichment, ₹2 per scoring, debited from the wallet of the user who triggered the action. These rates are configurable data in `billing.py`/`PricingRate`, not hardcoded — same rule as scoring weights
 - A Razorpay payment is only considered successful, and a wallet only credited, after webhook signature verification server-side — never on the strength of a client-side redirect/callback alone
-- An Invoice is generated per Wallet recharge — never per card parsed or per batch of cards parsed — under a single service line item titled **"Visiting Card Recharge and Scoring"**, billed to the recharging user and carrying that user's GST No./Billing Address from their profile. Parse/enrichment/scoring debits still hit the ledger individually per action (for balance tracking), but they are not separately invoiced — the invoice is tied to the recharge transaction, not to each debit. **Invoices are visible to the user who generated them, and to every admin of that user's Organization** — admin visibility into invoices is read-only, and does not extend to spending from or crediting the sub-user's wallet. Invoices are immutable once issued (corrections are new adjustment entries, not edits)
+- An Invoice is generated per Wallet recharge — never per card parsed or per batch of cards parsed — under a single service line item titled **"Visiting Card Recharge and Scoring"**, billed to the recharging user and carrying that user's GST No./Billing Address from their `SellerProfile` row. Parse/enrichment/scoring debits still hit the ledger individually per action (for balance tracking), but they are not separately invoiced — the invoice is tied to the recharge transaction, not to each debit. **Invoices are visible to the user who generated them, and to every admin of that user's Organization** — admin visibility into invoices is read-only, and does not extend to spending from or crediting the sub-user's wallet. Invoices are immutable once issued (corrections are new adjustment entries, not edits)
 - A parse/enrich/score action must never be allowed to proceed, or be enqueued as billable Celery work, without first confirming sufficient balance in the **acting user's own wallet** — check-then-debit must be race-safe (e.g. a DB-level constraint or row lock), since concurrent bulk uploads by the same user can hit the same wallet at once
 
 ---
@@ -170,5 +171,5 @@ dashr-ai/
 - **Never let a billable action (parse/enrich/score) run without a race-safe balance check on the acting user's own wallet** — concurrent bulk uploads can overdraw a wallet if debit isn't atomic with the balance check
 - **Never edit or delete an issued Invoice** — corrections are new ledger/adjustment entries, not mutations of past invoices
 - **Never generate an Invoice per card parsed or per batch** — invoicing is tied to the Wallet recharge event only, under the single service name "Visiting Card Recharge and Scoring"; parse/enrichment/scoring debits are ledger entries, not separate invoices
-- **Never omit GST No./Billing Address from a User's profile before generating their Invoices** — invoices are billed to the individual user, so those fields are required per-user, not inherited from the org
+- **GST No./Billing Address are never a precondition for generating an Invoice** — both are optional on `SellerProfile`; an Invoice is issued on every Wallet recharge regardless of whether either is populated, using whatever value (including blank) is on file at issue time. Invoices are still billed to the individual user, so those fields are never inherited from the org — just never required
 - This file describes the target architecture for a repo that currently has no application code — when code starts landing, keep this file in sync with what's actually built rather than what was planned

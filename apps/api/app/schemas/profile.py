@@ -21,6 +21,8 @@ class SellerProfileOut(BaseModel):
     revenue_currency: str | None
     target_customer_description: str | None
     target_regions: str | None
+    gst_no: str | None
+    billing_address: str | None
     created_at: datetime | None
     updated_at: datetime | None
 
@@ -33,3 +35,5 @@ class SellerProfileUpdate(BaseModel):
     revenue_currency: str | None = Field(default=None, max_length=10)
     target_customer_description: str | None = Field(default=None, max_length=2000)
     target_regions: str | None = Field(default=None, max_length=500)
+    gst_no: str | None = Field(default=None, max_length=20)
+    billing_address: str | None = Field(default=None, max_length=500)
