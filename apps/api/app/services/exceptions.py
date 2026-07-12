@@ -119,7 +119,15 @@ class CardStateChangedError(Exception):
 
 class CardNotEligibleForScoringError(Exception):
     """Raised by POST /cards/{card_id}/score when the card's status isn't
-    'extracted' — scoring requires a card to have finished parsing.
-    Re-scoring an already-scored 'extracted' card is allowed (no "already
-    scored" guard); this only blocks cards still 'new'/'processing'/
-    'failed'/'merged'/'duplicate'."""
+    'extracted' — scoring requires a card to have finished parsing. Blocks
+    cards still 'new'/'processing'/'failed'/'merged'/'duplicate'. Distinct
+    from CardAlreadyScoredError, which blocks re-scoring an eligible card
+    that's already been scored."""
+
+
+class CardAlreadyScoredError(Exception):
+    """Raised by POST /cards/{card_id}/score when the card already has a
+    lead_score. Scoring is one-shot per card — once scored, a card can never
+    be re-scored, even after enrichment brings in better company data. There
+    is deliberately no "already scored" bypass, unlike the original design;
+    sellers must enrich a company before scoring a card, not after."""

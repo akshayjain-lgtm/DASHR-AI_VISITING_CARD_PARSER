@@ -2,15 +2,19 @@
 // .claude/specs/10-lead-scoring.md:
 //   - the dashboard "Leads" table rendering real lead_score via ScoreBadge
 //     (HIGH/MED/LOW buckets) or an "UNSCORED" badge when lead_score is null
-//   - the dashboard's "Score Selected (N)" bulk action, scoped to the
-//     extracted-status subset of the current selection
-//   - CardDetailDrawer's "Score Card"/"Re-score Card" CTA, disabled unless
-//     the card's status is "extracted", which re-fetches the card after
-//     scoring completes
+//     — this page has NO scoring CTA at all (bulk or per-row); scoring is
+//     only ever initiated from the upload page or the card detail drawer
+//   - CardDetailDrawer's one-shot "Score Card" CTA, disabled unless the
+//     card's status is "extracted", which re-fetches the card after scoring
+//     completes and is replaced by a locked-state message (no "Re-score
+//     Card" variant) once the card has a lead_score
 //   - the upload page's row-level "Score card" (Target) icon, whose spinner
 //     stays visible until the card's scored_at actually changes (not just
-//     until the enqueue POST resolves), and the "Scored" status pill that
-//     appears once a card has a lead_score
+//     until the enqueue POST resolves), which disappears permanently once
+//     the card is scored, and the "Scored" status pill that appears once a
+//     card has a lead_score
+//   - the upload page's bulk "Score" button, which shows a live done/total
+//     progress bar while a bulk batch is in flight
 //
 // global.fetch is mocked end-to-end (never hits a real server). We dispatch
 // on method + relative URL, matching apps/web/lib/api.ts's actual request
@@ -191,10 +195,9 @@ describe("Dashboard leads table scoring", () => {
     expect(screen.getByText("UNSCORED")).toBeInTheDocument();
   });
 
-  it("renders Score Selected disabled at zero, enables once an extracted card is checked", async () => {
+  it("never renders a scoring CTA — no bulk or per-card score action on this page", async () => {
     const user = userEvent.setup();
     const cards = [
-      makeCard({ card_id: "card-new", full_name: "Not Yet Parsed", status: "new", lead_score: null }),
       makeCard({ card_id: "card-extracted", full_name: "Ready To Score", status: "extracted", lead_score: null }),
     ];
     const { fetchMock } = createApiMock({ cards });
@@ -203,37 +206,11 @@ describe("Dashboard leads table scoring", () => {
     render(<Dashboard />);
     await screen.findByText("Ready To Score");
 
-    expect(screen.getByRole("button", { name: "Score Selected (0)" })).toBeDisabled();
-
     await user.click(screen.getByRole("checkbox", { name: "Select all cards" }));
 
-    // Only the "extracted" card counts toward Score Selected — the "new"
-    // card isn't eligible yet.
-    expect(screen.getByRole("button", { name: "Score Selected (1)" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Score Selected (1)" })).not.toBeDisabled();
-  });
-
-  it("clicking Score Selected sends exactly the selected-and-extracted card ids, then clears the selection", async () => {
-    const user = userEvent.setup();
-    const cards = [
-      makeCard({ card_id: "card-new", full_name: "Not Yet Parsed", status: "new", lead_score: null }),
-      makeCard({ card_id: "card-extracted", full_name: "Ready To Score", status: "extracted", lead_score: null }),
-    ];
-    const { fetchMock, scoreCallsBulk } = createApiMock({ cards });
-    vi.stubGlobal("fetch", fetchMock);
-
-    render(<Dashboard />);
-    await screen.findByText("Ready To Score");
-
-    await user.click(screen.getByRole("checkbox", { name: "Select all cards" }));
-    await user.click(await screen.findByRole("button", { name: "Score Selected (1)" }));
-
-    await waitFor(() => expect(scoreCallsBulk).toHaveLength(1));
-    expect(scoreCallsBulk[0].card_ids).toEqual(["card-extracted"]);
-
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Score Selected (0)" })).toBeInTheDocument()
-    );
+    expect(screen.queryByRole("button", { name: /score/i })).not.toBeInTheDocument();
+    // Export CSV, the page's only bulk action, is unaffected by scoring's removal.
+    expect(screen.getByRole("button", { name: "Export CSV (1)" })).toBeInTheDocument();
   });
 });
 
@@ -253,7 +230,7 @@ describe("Card detail drawer scoring CTA", () => {
     expect(screen.getByText("Not scored yet.")).toBeInTheDocument();
   });
 
-  it("enables Score Card once extracted, calls POST /cards/{id}/score, then re-fetches and shows Re-score Card", async () => {
+  it("enables Score Card once extracted, calls POST /cards/{id}/score, then re-fetches and locks out further scoring", async () => {
     const user = userEvent.setup();
     const extractedUnscored: CardDetailOut = { ...sampleCardDetail, status: "extracted", lead_score: null };
     const scoredCard: CardDetailOut = {
@@ -285,8 +262,15 @@ describe("Card detail drawer scoring CTA", () => {
     await user.click(scoreButton);
 
     await waitFor(() => expect(scoreCallsSingle).toEqual(["card-1"]));
-    expect(await screen.findByRole("button", { name: "Re-score Card" })).toBeInTheDocument();
-    expect(screen.getByText("72")).toBeInTheDocument();
+    // No "Re-score Card" (or any other scoring) button ever appears once
+    // lead_score is set — scoring is one-shot, so the CTA is replaced by a
+    // locked-state message instead.
+    expect(await screen.findByText("72")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Score Card" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Re-score Card" })).not.toBeInTheDocument();
+    expect(
+      screen.getByText("This card has already been scored — scoring is one-shot and can’t be repeated.")
+    ).toBeInTheDocument();
   });
 });
 
@@ -381,6 +365,24 @@ describe("Upload page row scoring", () => {
     expect(screen.getByRole("button", { name: "Score card" })).toBeInTheDocument();
   });
 
+  it("hides the row Score icon once a card has already been scored, even though status is still extracted", async () => {
+    const card = makeUploadCard({
+      card_id: "card-1",
+      full_name: "Already Scored",
+      status: "extracted",
+      lead_score: 55,
+      scored_at: "2026-07-10T13:00:00Z",
+    });
+    const { fetchMock } = createUploadApiMock(card);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<UploadPage />);
+    await screen.findByText("Already Scored");
+
+    expect(screen.queryByRole("button", { name: "Score card" })).not.toBeInTheDocument();
+    expect(screen.getByText("Scored")).toBeInTheDocument();
+  });
+
   it(
     "keeps the row Score spinner visible until scored_at actually changes, then shows the Scored status pill",
     async () => {
@@ -413,7 +415,103 @@ describe("Upload page row scoring", () => {
         timeout: 4000,
       });
       expect(container.querySelector('[aria-label="Scoring card"]')).not.toBeInTheDocument();
+      // The Score icon must not come back — scoring is one-shot.
+      expect(screen.queryByRole("button", { name: "Score card" })).not.toBeInTheDocument();
     },
     8000
+  );
+});
+
+// ======================================================================
+// Upload page — bulk "Score" button's live done/total progress bar
+// ======================================================================
+
+// Each card in `scoreAtCallCount` flips to scored once the GET /cards call
+// counter reaches its configured threshold, letting a test drive two cards
+// to completion at different times and observe the progress bar's done
+// count move from 0 -> 1 -> 2 rather than jumping straight to "done".
+function createBulkUploadApiMock(initialCards: CardOut[], scoreAtCallCount: Record<string, number>) {
+  let cardsState = [...initialCards];
+  const scoreCallsBulk: { card_ids: string[] }[] = [];
+  let getCallCount = 0;
+
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : String(input);
+    const method = (init?.method ?? "GET").toUpperCase();
+
+    if (method === "GET" && /^\/api\/exhibitions/.test(url)) {
+      return jsonResponse(200, [] as ExhibitionOut[]);
+    }
+    if (method === "GET" && /^\/api\/cards(\?.*)?$/.test(url)) {
+      getCallCount += 1;
+      cardsState = cardsState.map((c) => {
+        const threshold = scoreAtCallCount[c.card_id];
+        if (threshold != null && getCallCount >= threshold && c.lead_score == null) {
+          return { ...c, lead_score: 55, scored_at: `2026-07-10T13:00:0${threshold}Z` };
+        }
+        return c;
+      });
+      return jsonResponse(200, cardsState);
+    }
+    if (method === "POST" && url === "/api/cards/score") {
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      scoreCallsBulk.push(body);
+      return jsonResponse(200, { enqueued_count: (body.card_ids ?? []).length, skipped_count: 0 });
+    }
+    throw new Error(`Unhandled fetch call in test: ${method} ${url}`);
+  });
+
+  return { fetchMock, scoreCallsBulk };
+}
+
+describe("Upload page bulk scoring progress bar", () => {
+  it(
+    "shows a live done/total progress bar that advances as each card in the batch finishes",
+    async () => {
+      const user = userEvent.setup();
+      const cardA = makeUploadCard({
+        card_id: "card-a",
+        full_name: "Card A",
+        status: "extracted",
+        lead_score: null,
+        scored_at: null,
+      });
+      const cardB = makeUploadCard({
+        card_id: "card-b",
+        full_name: "Card B",
+        status: "extracted",
+        lead_score: null,
+        scored_at: null,
+      });
+      // GET call #1 = mount, #2 = handleScoreCards' post-enqueue refresh,
+      // #3 = first 2s poll tick, #4 = second poll tick.
+      const { fetchMock, scoreCallsBulk } = createBulkUploadApiMock(
+        [cardA, cardB],
+        { "card-a": 3, "card-b": 4 }
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<UploadPage />);
+      await screen.findByText("Card A");
+
+      await user.click(screen.getByRole("checkbox", { name: "Select all cards" }));
+      await user.click(await screen.findByRole("button", { name: "Score (2)" }));
+
+      await waitFor(() => expect(scoreCallsBulk).toHaveLength(1));
+      expect(scoreCallsBulk[0].card_ids.slice().sort()).toEqual(["card-a", "card-b"]);
+
+      expect(await screen.findByText("Scoring 0/2")).toBeInTheDocument();
+
+      await waitFor(() => expect(screen.getByText("Scoring 1/2")).toBeInTheDocument(), {
+        timeout: 5000,
+      });
+
+      // Once both cards finish, the progress bar disappears entirely.
+      await waitFor(() => expect(screen.queryByText(/^Scoring \d\/2$/)).not.toBeInTheDocument(), {
+        timeout: 5000,
+      });
+      expect(screen.getAllByText("Scored")).toHaveLength(2);
+    },
+    14000
   );
 });

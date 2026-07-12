@@ -25,6 +25,7 @@ from app.schemas.cards import (
 from app.services import card_service, export_service
 from app.services.exceptions import (
     BatchTooLargeError,
+    CardAlreadyScoredError,
     CardHasMergedChildrenError,
     CardHasNoCompanyError,
     CardNotEligibleForScoringError,
@@ -236,6 +237,8 @@ def score_card(
         raise HTTPException(
             status_code=409, detail="Card must be extracted before it can be scored"
         )
+    except CardAlreadyScoredError:
+        raise HTTPException(status_code=409, detail="Card has already been scored")
     return CardOut.model_validate(card_service.to_card_out(db, card))
 
 

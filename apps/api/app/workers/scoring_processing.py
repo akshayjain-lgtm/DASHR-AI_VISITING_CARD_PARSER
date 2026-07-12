@@ -31,11 +31,15 @@ def score_card_task(self, card_id: str) -> None:
     Idempotency note: unlike process_card/enrich_company_task, scoring does
     no external I/O and so has no in-flight status to transition through —
     there is no fresh-delivery-vs-retry branch on self.request.retries.
-    Instead the single eligibility check (card.status == "extracted") is
-    re-run identically on every attempt, fresh or retried; if the card's
-    status moved out of "extracted" underneath a stuck/retried task, the
-    task just logs and returns rather than clobbering a card that's no
-    longer in the state that made it eligible when originally enqueued.
+    Instead the eligibility checks (card.status == "extracted", card not
+    already scored) are re-run identically on every attempt, fresh or
+    retried; if the card's status moved out of "extracted" underneath a
+    stuck/retried task, or it was already scored by a duplicate/concurrent
+    enqueue, the task just logs and returns rather than clobbering a card
+    that's no longer eligible. This is the same one-shot rule enforced in
+    card_service.score_card_now/enqueue_scoring, re-checked here too since
+    two enqueues racing past the service-layer check could otherwise both
+    reach this task.
 
     Seller calibration is loaded from the card's own owner (card.user_id),
     not whoever triggered this task — matters when an org admin scores a
@@ -52,6 +56,12 @@ def score_card_task(self, card_id: str) -> None:
             logger.info(
                 "score_card_task: card_id %s status=%s, not eligible, skipping",
                 card_id, card.status,
+            )
+            return
+        if card.lead_score is not None:
+            logger.info(
+                "score_card_task: card_id %s already scored, skipping (one-shot rule)",
+                card_id,
             )
             return
 

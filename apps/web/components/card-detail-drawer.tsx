@@ -308,13 +308,19 @@ export function CardDetailDrawer({
                 ) : (
                   <p className="text-sm text-black/30">Not scored yet.</p>
                 )}
-                <OBtn
-                  onClick={handleScoreCard}
-                  disabled={isScoring || card.status !== "extracted"}
-                  className="text-xs mt-2"
-                >
-                  {isScoring ? "Scoring…" : card.lead_score != null ? "Re-score Card" : "Score Card"}
-                </OBtn>
+                {card.lead_score == null ? (
+                  <OBtn
+                    onClick={handleScoreCard}
+                    disabled={isScoring || card.status !== "extracted"}
+                    className="text-xs mt-2"
+                  >
+                    {isScoring ? "Scoring…" : "Score Card"}
+                  </OBtn>
+                ) : (
+                  <p className="text-xs text-black/30 mt-2">
+                    This card has already been scored — scoring is one-shot and can&rsquo;t be repeated.
+                  </p>
+                )}
                 {scoreError && <p className="text-xs text-red-600 mt-1">{scoreError}</p>}
               </div>
 

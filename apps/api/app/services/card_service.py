@@ -17,6 +17,7 @@ from app.models.visiting_card import VisitingCard
 from app.services import exhibition_service, storage_service
 from app.services.exceptions import (
     BatchTooLargeError,
+    CardAlreadyScoredError,
     CardHasMergedChildrenError,
     CardHasNoCompanyError,
     CardNotEligibleForScoringError,
@@ -549,15 +550,18 @@ def enqueue_enrichment(
 
 
 def score_card_now(db: Session, current_user: User, card_id: uuid.UUID) -> VisitingCard:
-    """The explicit "Score Card"/"Re-score Card" CTA — POST /cards/{card_id}/score.
+    """The explicit, one-shot "Score Card" CTA — POST /cards/{card_id}/score.
 
-    Re-scoring an already-scored card is allowed and expected (e.g. after
-    enrichment completes) — there is deliberately no "already scored" guard
-    here, unlike enrich_company_now's one-shot-per-company rule.
+    Scoring is one-shot per card: once lead_score is set, re-scoring is
+    rejected (CardAlreadyScoredError) rather than allowed, so a card's score
+    can't drift after a seller has already acted on it. Enforced here, not
+    just hidden in the UI, so a direct API call can't bypass the rule.
     """
     card = get_visible_card(db, current_user, card_id)
     if card.status != "extracted":
         raise CardNotEligibleForScoringError()
+    if card.lead_score is not None:
+        raise CardAlreadyScoredError()
 
     try:
         score_card_task.delay(str(card.card_id))
@@ -570,10 +574,12 @@ def score_card_now(db: Session, current_user: User, card_id: uuid.UUID) -> Visit
 def enqueue_scoring(
     db: Session, current_user: User, card_ids: list[uuid.UUID]
 ) -> tuple[int, int]:
-    """Bulk counterpart to score_card_now — the "Score Selected" CTA.
+    """Bulk counterpart to score_card_now — the "Score" bulk CTA.
 
     Unlike enqueue_enrichment, there's no company-level dedupe needed here:
     scoring is purely per-card, so every eligible id enqueues its own task.
+    Same one-shot rule as score_card_now: already-scored cards are skipped
+    (counted in skipped_count) rather than re-enqueued.
     """
     enqueued = 0
     skipped = 0
@@ -584,7 +590,7 @@ def enqueue_scoring(
             skipped += 1
             continue
 
-        if card.status != "extracted":
+        if card.status != "extracted" or card.lead_score is not None:
             skipped += 1
             continue
 
