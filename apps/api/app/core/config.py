@@ -30,10 +30,6 @@ class Settings(BaseSettings):
     # enumerating a maliciously entry-heavy zip is itself costly even at a
     # tiny file size.
     max_archive_raw_entry_count: int = 2000
-    allowed_archive_content_types_raw: str = Field(
-        default="application/zip,application/x-zip-compressed,application/pdf",
-        alias="ALLOWED_ARCHIVE_CONTENT_TYPES",
-    )
     pdf_render_dpi: int = 200
     # Pre-render clamp — a PDF page's rendered pixel size is computed from
     # its point size before rasterizing, and clamped to this so a
@@ -65,14 +61,6 @@ class Settings(BaseSettings):
     @property
     def max_upload_file_size_bytes(self) -> int:
         return self.max_upload_file_size_mb * 1024 * 1024
-
-    @property
-    def allowed_archive_content_types(self) -> set[str]:
-        return {
-            t.strip()
-            for t in self.allowed_archive_content_types_raw.split(",")
-            if t.strip()
-        }
 
     @property
     def max_archive_file_size_bytes(self) -> int:

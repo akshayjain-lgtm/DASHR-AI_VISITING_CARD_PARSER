@@ -79,7 +79,14 @@ def create_archive_upload(
     archive_id = uuid.uuid4()
     ext = ".zip" if container_type == "zip" else ".pdf"
     key = f"archives/{current_user.user_id}/{archive_id}{ext}"
-    storage_service.upload_file(key, data, file.content_type or "application/octet-stream")
+    # Stored Content-Type is derived from the already-sniffed container_type,
+    # never the client-declared file.content_type — that header is
+    # attacker-controlled and, if this object were ever served back (a
+    # presigned URL, a future debug/download route), an untrusted value
+    # there could make a browser render it as something other than inert
+    # archive bytes.
+    storage_content_type = "application/zip" if container_type == "zip" else "application/pdf"
+    storage_service.upload_file(key, data, storage_content_type)
 
     archive = ArchiveUpload(
         archive_id=archive_id,
@@ -90,21 +97,30 @@ def create_archive_upload(
         storage_key=key,
         status="processing",
     )
-    db.add(archive)
-    db.commit()
-    db.refresh(archive)
-
+    # Unlike a per-card enqueue failure elsewhere (enqueue_processing,
+    # reprocess_card — which just logs and leaves the card individually
+    # recoverable via a "reprocess" retry), an archive_uploads row has no
+    # equivalent per-row retry path. A failure anywhere in this block —
+    # committing the row itself, or enqueueing the Celery task once it
+    # exists — would otherwise leave the just-uploaded archive object
+    # orphaned in storage (row never created, or stuck at
+    # status="processing" forever with zero cards ever made), so both
+    # failure points roll back the storage upload the same way.
     try:
+        db.add(archive)
+        db.commit()
+        db.refresh(archive)
         expand_archive_upload.delay(str(archive.archive_id))
     except Exception:
-        # Unlike a per-card enqueue failure elsewhere (enqueue_processing,
-        # reprocess_card — which just logs and leaves the card individually
-        # recoverable via a "reprocess" retry), an archive_uploads row has no
-        # equivalent per-row retry path. Leaving status="processing" here
-        # would strand it forever with zero cards ever created, so roll back
-        # fully instead of the log-and-continue pattern used elsewhere.
-        db.delete(archive)
-        db.commit()
+        db.rollback()
+        # A rollback discards an uncommitted add(), but not a commit that
+        # already succeeded — re-querying tells us which failure this was:
+        # if the row is there, the commit succeeded and only delay() failed,
+        # so the row itself still needs deleting.
+        persisted = db.get(ArchiveUpload, archive_id)
+        if persisted is not None:
+            db.delete(persisted)
+            db.commit()
         storage_service.delete_file(key)
         raise
 

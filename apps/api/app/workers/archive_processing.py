@@ -43,6 +43,12 @@ def expand_archive_upload(archive_id: str) -> None:
             with zipfile.ZipFile(io.BytesIO(data)) as zf:
                 names = list_zip_image_entries(zf)  # same filter+sort as the sync check
                 for i, name in enumerate(names):
+                    # _create_card_from_bytes (storage upload + commit) is
+                    # deliberately inside this try — a per-entry failure
+                    # there (transient S3 error, etc.) must count as
+                    # "skipped", not escape to the outer handler and mark
+                    # the whole archive failed after other cards already
+                    # committed successfully.
                     try:
                         entry_bytes = read_limited(
                             zf.open(name), settings.max_upload_file_size_bytes
@@ -52,6 +58,9 @@ def expand_archive_upload(archive_id: str) -> None:
                             continue
                         content_type = content_type_for_entry(name)
                         verify_image_content(entry_bytes, content_type, name)
+                        _create_card_from_bytes(
+                            db, archive, entry_bytes, content_type, name.rsplit("/", 1)[-1], i
+                        )
                     except Exception:
                         logger.warning(
                             "expand_archive_upload: skipping unreadable zip entry "
@@ -61,9 +70,6 @@ def expand_archive_upload(archive_id: str) -> None:
                         )
                         skipped += 1
                         continue
-                    _create_card_from_bytes(
-                        db, archive, entry_bytes, content_type, name.rsplit("/", 1)[-1], i
-                    )
                     created += 1
         else:  # pdf
             pdf = pypdfium2.PdfDocument(data)
@@ -90,6 +96,8 @@ def expand_archive_upload(archive_id: str) -> None:
                     if len(entry_bytes) > settings.max_upload_file_size_bytes:
                         skipped += 1
                         continue
+                    page_name = f"{archive.original_filename or 'card'} — page {i + 1}"
+                    _create_card_from_bytes(db, archive, entry_bytes, "image/jpeg", page_name, i)
                 except Exception:
                     logger.warning(
                         "expand_archive_upload: skipping unrenderable PDF page %d "
@@ -99,8 +107,6 @@ def expand_archive_upload(archive_id: str) -> None:
                     )
                     skipped += 1
                     continue
-                page_name = f"{archive.original_filename or 'card'} — page {i + 1}"
-                _create_card_from_bytes(db, archive, entry_bytes, "image/jpeg", page_name, i)
                 created += 1
 
         if created == 0:
@@ -115,13 +121,21 @@ def expand_archive_upload(archive_id: str) -> None:
             archive.status = "completed"
         db.commit()
         storage_service.delete_file(archive.storage_key)  # best-effort, never raises
-    except Exception as exc:
+    except Exception:
+        # Reserved for archive-level failures (can't open the container at
+        # all, DB down, etc.) — per-entry/per-page failures are handled and
+        # counted as `skipped` above, never reaching here. The real
+        # exception detail goes to the log only; archive.error_message is
+        # user-facing (rendered verbatim in the upload page's failed-status
+        # banner) so it must never carry raw exception text, which can leak
+        # internal paths, bucket names, or library internals.
         db.rollback()
         archive = db.get(ArchiveUpload, uuid.UUID(archive_id))
         if archive is not None:
             archive.status = "failed"
-            archive.error_message = str(exc)[:500]
+            archive.error_message = "Processing failed due to an internal error."
             db.commit()
+            storage_service.delete_file(archive.storage_key)  # best-effort, never raises
         logger.exception("expand_archive_upload failed for archive_id=%s", archive_id)
     finally:
         db.close()
