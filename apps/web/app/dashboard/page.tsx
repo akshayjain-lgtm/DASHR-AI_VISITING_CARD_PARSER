@@ -167,7 +167,7 @@ export default function Dashboard() {
                   disabled={isScoring || scoreEligibleSelected.length === 0}
                   className="text-xs"
                 >
-                  {isScoring ? "Starting…" : `Score Selected (${scoreEligibleSelected.length})`}
+                  {isScoring ? "Starting…" : `Score (${scoreEligibleSelected.length})`}
                 </OBtn>
                 <OBtn
                   onClick={handleExportCards}

@@ -10,6 +10,8 @@ from app.models.user import User
 from app.schemas.cards import (
     BulkUploadCardSummary,
     BulkUploadResponse,
+    CardBulkDeleteRequest,
+    CardBulkDeleteResponse,
     CardDetailOut,
     CardEnrichRequest,
     CardEnrichResponse,
@@ -37,6 +39,19 @@ from app.services.exceptions import (
 )
 
 router = APIRouter(prefix="/cards", tags=["cards"])
+
+
+def _cascade_confirmation_detail(exc: CardHasMergedChildrenError, subject: str) -> dict:
+    """Builds the {message, child_count} 409 body shared by DELETE
+    /cards/{card_id} and POST /cards/bulk-delete — subject is "This card"
+    or "Your selection", the only wording difference between the two."""
+    return {
+        "message": (
+            f"{subject} has {exc.child_count} merged card"
+            f"{'s' if exc.child_count != 1 else ''} that will also be deleted."
+        ),
+        "child_count": exc.child_count,
+    }
 
 
 @router.post("/bulk-upload", status_code=201, response_model=BulkUploadResponse)
@@ -116,6 +131,28 @@ def export_cards(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.post("/bulk-delete", response_model=CardBulkDeleteResponse)
+def bulk_delete_cards(
+    body: CardBulkDeleteRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    try:
+        deleted, skipped = card_service.bulk_delete_cards(
+            db, user, body.card_ids, body.confirm_cascade
+        )
+    except CardHasMergedChildrenError as exc:
+        raise HTTPException(
+            status_code=409, detail=_cascade_confirmation_detail(exc, "Your selection")
+        )
+    except CardStateChangedError:
+        raise HTTPException(
+            status_code=409,
+            detail="Your selection changed while being deleted — please try again",
+        )
+    return CardBulkDeleteResponse(deleted_count=deleted, skipped_count=skipped)
 
 
 @router.get("", response_model=list[CardOut])
@@ -215,14 +252,7 @@ def delete_card(
         raise HTTPException(status_code=404, detail="Card not found")
     except CardHasMergedChildrenError as exc:
         raise HTTPException(
-            status_code=409,
-            detail={
-                "message": (
-                    f"This card has {exc.child_count} merged card"
-                    f"{'s' if exc.child_count != 1 else ''} that will also be deleted."
-                ),
-                "child_count": exc.child_count,
-            },
+            status_code=409, detail=_cascade_confirmation_detail(exc, "This card")
         )
     except CardStateChangedError:
         raise HTTPException(

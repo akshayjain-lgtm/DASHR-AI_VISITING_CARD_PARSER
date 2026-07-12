@@ -88,10 +88,11 @@ class CompanyNotEligibleForEnrichmentError(Exception):
 
 
 class CardHasMergedChildrenError(Exception):
-    """Raised by DELETE /cards/{card_id} when the target card has other cards
-    merged into it (merged_into_card_id pointing at it) and the caller hasn't
-    confirmed the cascade via confirm_cascade=true. Carries child_count so the
-    router can tell the caller how many cards would also be deleted."""
+    """Raised by DELETE /cards/{card_id} and POST /cards/bulk-delete when a
+    target card has other cards merged into it (merged_into_card_id pointing
+    at it) and the caller hasn't confirmed the cascade via
+    confirm_cascade=true. Carries child_count so the router can tell the
+    caller how many cards would also be deleted."""
 
     def __init__(self, child_count: int):
         self.child_count = child_count
@@ -100,10 +101,11 @@ class CardHasMergedChildrenError(Exception):
 
 
 class CardStateChangedError(Exception):
-    """Raised by DELETE /cards/{card_id} when a concurrent request merged a
-    new child onto this card between the children lookup and the commit,
-    causing the self-referencing merged_into_card_id FK to reject the delete
-    at commit time. The caller should retry the request."""
+    """Raised by DELETE /cards/{card_id} and POST /cards/bulk-delete when a
+    concurrent request merged a new child onto a card between the children
+    lookup and the commit, causing the self-referencing merged_into_card_id
+    FK to reject the delete at commit time. The caller should retry the
+    request."""
 
 
 class CardNotEligibleForScoringError(Exception):

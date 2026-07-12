@@ -171,3 +171,20 @@ class CardExportRequest(BaseModel):
     # its docstring). Don't raise this without re-evaluating whether export
     # should become a Celery task instead.
     card_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+
+
+class CardBulkDeleteRequest(BaseModel):
+    card_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+    # Same meaning as DELETE /cards/{card_id}'s confirm_cascade query param —
+    # false on the first attempt; the caller resends the same request with
+    # this set to true once the 409/child_count confirmation is accepted.
+    confirm_cascade: bool = False
+
+
+class CardBulkDeleteResponse(BaseModel):
+    deleted_count: int
+    # card_ids that weren't visible to the caller (wrong owner, different
+    # org, or nonexistent) — silently skipped rather than failing the whole
+    # batch, mirroring enqueue_enrichment/enqueue_scoring's best-effort
+    # contract over a client-picked selection.
+    skipped_count: int
