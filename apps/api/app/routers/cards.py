@@ -41,6 +41,19 @@ from app.services.exceptions import (
 router = APIRouter(prefix="/cards", tags=["cards"])
 
 
+def _cascade_confirmation_detail(exc: CardHasMergedChildrenError, subject: str) -> dict:
+    """Builds the {message, child_count} 409 body shared by DELETE
+    /cards/{card_id} and POST /cards/bulk-delete — subject is "This card"
+    or "Your selection", the only wording difference between the two."""
+    return {
+        "message": (
+            f"{subject} has {exc.child_count} merged card"
+            f"{'s' if exc.child_count != 1 else ''} that will also be deleted."
+        ),
+        "child_count": exc.child_count,
+    }
+
+
 @router.post("/bulk-upload", status_code=201, response_model=BulkUploadResponse)
 def bulk_upload(
     exhibition_id: uuid.UUID | None = Form(default=None),
@@ -132,14 +145,7 @@ def bulk_delete_cards(
         )
     except CardHasMergedChildrenError as exc:
         raise HTTPException(
-            status_code=409,
-            detail={
-                "message": (
-                    f"Your selection has {exc.child_count} merged card"
-                    f"{'s' if exc.child_count != 1 else ''} that will also be deleted."
-                ),
-                "child_count": exc.child_count,
-            },
+            status_code=409, detail=_cascade_confirmation_detail(exc, "Your selection")
         )
     except CardStateChangedError:
         raise HTTPException(
@@ -246,14 +252,7 @@ def delete_card(
         raise HTTPException(status_code=404, detail="Card not found")
     except CardHasMergedChildrenError as exc:
         raise HTTPException(
-            status_code=409,
-            detail={
-                "message": (
-                    f"This card has {exc.child_count} merged card"
-                    f"{'s' if exc.child_count != 1 else ''} that will also be deleted."
-                ),
-                "child_count": exc.child_count,
-            },
+            status_code=409, detail=_cascade_confirmation_detail(exc, "This card")
         )
     except CardStateChangedError:
         raise HTTPException(
