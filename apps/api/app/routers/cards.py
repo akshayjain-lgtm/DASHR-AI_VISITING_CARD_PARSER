@@ -10,6 +10,8 @@ from app.models.user import User
 from app.schemas.cards import (
     BulkUploadCardSummary,
     BulkUploadResponse,
+    CardBulkDeleteRequest,
+    CardBulkDeleteResponse,
     CardDetailOut,
     CardEnrichRequest,
     CardEnrichResponse,
@@ -116,6 +118,35 @@ def export_cards(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.post("/bulk-delete", response_model=CardBulkDeleteResponse)
+def bulk_delete_cards(
+    body: CardBulkDeleteRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    try:
+        deleted, skipped = card_service.bulk_delete_cards(
+            db, user, body.card_ids, body.confirm_cascade
+        )
+    except CardHasMergedChildrenError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    f"Your selection has {exc.child_count} merged card"
+                    f"{'s' if exc.child_count != 1 else ''} that will also be deleted."
+                ),
+                "child_count": exc.child_count,
+            },
+        )
+    except CardStateChangedError:
+        raise HTTPException(
+            status_code=409,
+            detail="Your selection changed while being deleted — please try again",
+        )
+    return CardBulkDeleteResponse(deleted_count=deleted, skipped_count=skipped)
 
 
 @router.get("", response_model=list[CardOut])

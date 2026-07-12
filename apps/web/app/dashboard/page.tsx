@@ -4,11 +4,13 @@ import { useEffect, useState } from "react";
 import { Search, Filter, Upload } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Sidebar } from "@/components/sidebar";
-import { OBtn } from "@/components/buttons";
+import { OBtn, DBtn } from "@/components/buttons";
 import { CardDetailDrawer } from "@/components/card-detail-drawer";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { getCurrentUser } from "@/lib/auth";
 import { ApiError, exportCards, listCards, scoreCards, type CardOut, type UserOut } from "@/lib/api";
 import { useCardSelection } from "@/lib/use-card-selection";
+import { bulkDeleteConfirmCopy, useBulkDeleteCardsConfirm } from "@/lib/use-delete-card-confirm";
 
 function ScoreBadge({ score }: { score: number }) {
   if (score >= 80)
@@ -103,6 +105,19 @@ export default function Dashboard() {
     }
   }
 
+  const {
+    state: bulkDeleteState,
+    isDeleting: isBulkDeleting,
+    deleteError: bulkDeleteError,
+    requestDelete: requestBulkDelete,
+    confirm: confirmBulkDelete,
+    cancel: cancelBulkDelete,
+  } = useBulkDeleteCardsConfirm(() => {
+    clearSelection();
+    refreshCards();
+  });
+  const bulkDeleteConfirm = bulkDeleteConfirmCopy(bulkDeleteState);
+
   return (
     <div className="min-h-screen bg-white flex">
       <Sidebar active="dashboard" />
@@ -176,6 +191,13 @@ export default function Dashboard() {
                 >
                   {isExporting ? "Exporting…" : `Export CSV (${selectedCardIds.size})`}
                 </OBtn>
+                <DBtn
+                  onClick={() => requestBulkDelete([...selectedCardIds])}
+                  disabled={isBulkDeleting || selectedCardIds.size === 0}
+                  className="text-xs"
+                >
+                  {isBulkDeleting ? "Deleting…" : `Delete Selected (${selectedCardIds.size})`}
+                </DBtn>
               </>
             )}
           </div>
@@ -189,6 +211,12 @@ export default function Dashboard() {
           {exportError && (
             <div className="border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
               {exportError}
+            </div>
+          )}
+
+          {bulkDeleteError && (
+            <div className="border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {bulkDeleteError}
             </div>
           )}
 
@@ -237,6 +265,15 @@ export default function Dashboard() {
           </div>
         </div>
       </main>
+
+      {bulkDeleteConfirm && (
+        <ConfirmDialog
+          {...bulkDeleteConfirm}
+          isConfirming={isBulkDeleting}
+          onConfirm={confirmBulkDelete}
+          onCancel={cancelBulkDelete}
+        />
+      )}
 
       {selectedCardId && (
         <CardDetailDrawer

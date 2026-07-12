@@ -312,6 +312,34 @@ export async function deleteCard(cardId: string, confirmCascade = false): Promis
   throw new ApiError(res.status, extractErrorMessage(body));
 }
 
+// Same 409-overload handling as deleteCard (a {child_count} body means
+// cascade confirmation needed), plus a best-effort skipped_count for ids
+// that weren't visible to the caller — not routed through request() for the
+// same reason deleteCard isn't.
+export async function bulkDeleteCards(
+  cardIds: string[],
+  confirmCascade = false
+): Promise<{ deleted_count: number; skipped_count: number }> {
+  const res = await fetch(`${API_URL}/cards/bulk-delete`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ card_ids: cardIds, confirm_cascade: confirmCascade }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (res.ok) return body;
+
+  if (
+    res.status === 409 &&
+    typeof body?.detail === "object" &&
+    body.detail !== null &&
+    "child_count" in body.detail
+  ) {
+    throw new CardHasMergedChildrenError(Number(body.detail.child_count));
+  }
+  throw new ApiError(res.status, extractErrorMessage(body));
+}
+
 export function processCards(
   params: { exhibitionId?: string; cardIds?: string[] } = {}
 ): Promise<{ enqueued_count: number }> {

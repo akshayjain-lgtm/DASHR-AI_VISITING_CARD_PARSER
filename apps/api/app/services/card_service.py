@@ -706,3 +706,68 @@ def delete_card(
 
     for key in keys:
         storage_service.delete_file(key)
+
+
+def bulk_delete_cards(
+    db: Session, current_user: User, card_ids: list[uuid.UUID], confirm_cascade: bool
+) -> tuple[int, int]:
+    """Bulk counterpart to delete_card — the "Delete Selected" CTA. Deletes
+    every requested card_id visible to current_user; ids that aren't visible
+    (wrong owner, different org, or nonexistent) are silently skipped and
+    counted in skipped_count, same best-effort contract as
+    enqueue_enrichment/enqueue_scoring/export_cards over a client-picked
+    selection.
+
+    Cascade confirmation is aggregated across the whole batch rather than
+    per-card: if any selected card has merged children that *aren't
+    themselves part of the selection*, this raises CardHasMergedChildrenError
+    once with the total extra count, and nothing is deleted until the caller
+    resends with confirm_cascade=True. A child that's already in the
+    requested selection needs no extra confirmation — the user explicitly
+    picked it.
+    """
+    requested_ids = set(card_ids)
+    cards = db.scalars(
+        scope_to_visible_users(select(VisitingCard), current_user, VisitingCard.user_id).where(
+            VisitingCard.card_id.in_(requested_ids)
+        )
+    ).all()
+    selected_ids = {c.card_id for c in cards}
+    skipped_count = len(requested_ids) - len(selected_ids)
+
+    # Not scoped by current_user's own visibility — same reasoning as
+    # delete_card's single-card children lookup: a child's authorization
+    # derives from having merged into an already-authorized card, not from
+    # sharing the deleting user's user_id.
+    children = db.scalars(
+        select(VisitingCard).where(VisitingCard.merged_into_card_id.in_(selected_ids))
+    ).all()
+    extra_children = [c for c in children if c.card_id not in selected_ids]
+
+    if extra_children and not confirm_cascade:
+        raise CardHasMergedChildrenError(child_count=len(extra_children))
+
+    to_delete = [*cards, *extra_children]
+    keys = [c.image_url for c in to_delete if c.image_url]
+
+    # Children (merged_into_card_id set) deleted and flushed before parents/
+    # standalones, same ordering reason as delete_card: merged_into_card_id
+    # has no ON DELETE rule, so a parent can't be removed while a child still
+    # points at it.
+    child_objs = [c for c in to_delete if c.merged_into_card_id is not None]
+    parent_or_standalone_objs = [c for c in to_delete if c.merged_into_card_id is None]
+    for child in child_objs:
+        db.delete(child)
+    db.flush()
+    for card in parent_or_standalone_objs:
+        db.delete(card)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise CardStateChangedError()
+
+    for key in keys:
+        storage_service.delete_file(key)
+
+    return len(to_delete), skipped_count
