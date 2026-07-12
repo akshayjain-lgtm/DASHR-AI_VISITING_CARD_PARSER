@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { UploadCloud, X, CheckCircle2, AlertCircle, Trash2, Sparkles, Target, Loader2 } from "lucide-react";
 import { Sidebar } from "@/components/sidebar";
-import { OBtn, GBtn } from "@/components/buttons";
+import { OBtn, GBtn, DBtn } from "@/components/buttons";
 import { CardDetailDrawer } from "@/components/card-detail-drawer";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import {
@@ -20,7 +20,12 @@ import {
   type CardOut,
   type ExhibitionOut,
 } from "@/lib/api";
-import { deleteConfirmCopy, useDeleteCardConfirm } from "@/lib/use-delete-card-confirm";
+import {
+  bulkDeleteConfirmCopy,
+  deleteConfirmCopy,
+  useBulkDeleteCardsConfirm,
+  useDeleteCardConfirm,
+} from "@/lib/use-delete-card-confirm";
 import { useCardSelection } from "@/lib/use-card-selection";
 
 export default function UploadPage() {
@@ -301,6 +306,19 @@ export default function UploadPage() {
   } = useDeleteCardConfirm(refreshCards);
   const deleteConfirm = deleteConfirmCopy(deleteState);
 
+  const {
+    state: bulkDeleteState,
+    isDeleting: isBulkDeleting,
+    deleteError: bulkDeleteError,
+    requestDelete: requestBulkDelete,
+    confirm: confirmBulkDelete,
+    cancel: cancelBulkDelete,
+  } = useBulkDeleteCardsConfirm(() => {
+    clearSelection();
+    refreshCards();
+  });
+  const bulkDeleteConfirm = bulkDeleteConfirmCopy(bulkDeleteState);
+
   return (
     <div className="min-h-screen bg-white flex">
       <Sidebar active="upload" />
@@ -464,7 +482,7 @@ export default function UploadPage() {
                   disabled={isParsing || parseEligibleSelected.length === 0}
                   className="text-xs"
                 >
-                  {isParsing ? "Starting…" : `Parse Selected (${parseEligibleSelected.length})`}
+                  {isParsing ? "Starting…" : `Parse (${parseEligibleSelected.length})`}
                 </OBtn>
                 <div className="flex items-center gap-2 border-l border-black/10 pl-3">
                   <GBtn
@@ -472,15 +490,24 @@ export default function UploadPage() {
                     disabled={isEnriching || enrichEligibleSelected.length === 0}
                     className="text-xs"
                   >
-                    {isEnriching ? "Starting…" : `Enrich Selected (${enrichEligibleSelected.length})`}
+                    {isEnriching ? "Starting…" : `Enrich (${enrichEligibleSelected.length})`}
                   </GBtn>
                   <GBtn
                     onClick={handleScoreCards}
                     disabled={isScoring || scoreEligibleSelected.length === 0}
                     className="text-xs"
                   >
-                    {isScoring ? "Starting…" : `Score Selected (${scoreEligibleSelected.length})`}
+                    {isScoring ? "Starting…" : `Score (${scoreEligibleSelected.length})`}
                   </GBtn>
+                </div>
+                <div className="flex items-center gap-2 border-l border-black/10 pl-3">
+                  <DBtn
+                    onClick={() => requestBulkDelete([...selectedCardIds])}
+                    disabled={isBulkDeleting || selectedCardIds.size === 0}
+                    className="text-xs"
+                  >
+                    {isBulkDeleting ? "Deleting…" : `Delete (${selectedCardIds.size})`}
+                  </DBtn>
                 </div>
               </div>
             )}
@@ -525,6 +552,13 @@ export default function UploadPage() {
             <div className="mb-3 border border-red-200 bg-red-50 px-4 py-3 flex items-start gap-2 text-sm text-red-700">
               <AlertCircle size={15} className="shrink-0 mt-0.5" />
               {deleteError}
+            </div>
+          )}
+
+          {bulkDeleteError && (
+            <div className="mb-3 border border-red-200 bg-red-50 px-4 py-3 flex items-start gap-2 text-sm text-red-700">
+              <AlertCircle size={15} className="shrink-0 mt-0.5" />
+              {bulkDeleteError}
             </div>
           )}
 
@@ -657,6 +691,15 @@ export default function UploadPage() {
           isConfirming={isDeleting}
           onConfirm={confirmDelete}
           onCancel={cancelDelete}
+        />
+      )}
+
+      {bulkDeleteConfirm && (
+        <ConfirmDialog
+          {...bulkDeleteConfirm}
+          isConfirming={isBulkDeleting}
+          onConfirm={confirmBulkDelete}
+          onCancel={cancelBulkDelete}
         />
       )}
 
