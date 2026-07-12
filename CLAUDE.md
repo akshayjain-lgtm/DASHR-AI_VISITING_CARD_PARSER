@@ -10,7 +10,7 @@ Core workflows:
 3. **Enrichment** — cross-reference extracted company names against public data sources to attach firmographics (industry/NAICS code, employee count, revenue band, location)
 4. **Scoring** — rank each lead against a configurable industrial/manufacturing product-fit model
 5. **Review & export** — sales reps triage a scored lead list per exhibition on an analytics dashboard and push qualified leads to CRM
-6. **Billing** — every parse/enrich/score action is a metered, prepaid action debited from an org's INR wallet; sellers recharge the wallet via Razorpay and view invoices in their account
+6. **Billing** — every parse/enrich/score action is a metered, prepaid action debited from the acting user's INR wallet; sellers recharge the wallet via Razorpay, and each recharge generates an invoice (service name "Visiting Card Recharge and Scoring") viewable in their account
 
 This is a greenfield repo — no application code exists yet. This file defines the target architecture new work should scaffold toward, not a description of code that already exists. Treat structural claims below as the plan, not as verified fact, until the corresponding code lands.
 
@@ -37,7 +37,7 @@ dashr-ai/
 │   │   │   │   ├── enrichment.py     # Company name → firmographics lookup
 │   │   │   │   ├── scoring.py        # Firmographics + role → product-fit score
 │   │   │   │   ├── billing.py        # Wallet debits/credits, pricing lookup, ledger writes
-│   │   │   │   ├── invoicing.py      # Invoice generation (per card or per batch)
+│   │   │   │   ├── invoicing.py      # Invoice generation on wallet recharge, service name "Visiting Card Recharge and Scoring"
 │   │   │   │   └── payments.py       # Razorpay order creation + webhook verification
 │   │   │   ├── models/           # SQLAlchemy models (multi-tenant, org-scoped)
 │   │   │   ├── workers/          # Celery tasks for async batch processing
@@ -59,7 +59,7 @@ dashr-ai/
 **Where things belong:**
 - UI, routing, session/auth flows → `apps/web`
 - Anything touching the database, OCR, enrichment, scoring, wallet, or invoicing → `apps/api`, never in Next.js API routes beyond thin passthroughs
-- Long-running or bulk work (batch card processing, enrichment lookups, batch invoice generation) → Celery tasks in `apps/api/app/workers`, never inline in a request handler
+- Long-running or bulk work (batch card processing, enrichment lookups) → Celery tasks in `apps/api/app/workers`, never inline in a request handler
 - New scoring criteria/weights → `apps/api/app/services/scoring.py`, kept as configurable data, not hardcoded branches
 - Per-action pricing (parse/enrich/score rates) → `apps/api/app/services/billing.py`, kept as configurable data, not hardcoded branches — same principle as scoring weights, since prices will change and may eventually vary per-org
 - Razorpay order creation, signature verification, and webhook handling → `apps/api/app/services/payments.py` + `apps/api/app/routers/payments` only; never verify payment status from a client-side callback alone
@@ -82,7 +82,7 @@ dashr-ai/
 | Auth | Org-based multi-tenant auth (Auth.js/NextAuth or Clerk) with an admin/sub-user role per User, JWT passed to FastAPI | B2B SaaS — every request is scoped to an organization for data visibility, but billing is scoped to the individual user, not the org |
 | Payments | Razorpay (Orders API for wallet recharge; webhooks for confirmation; e-mandates for the later UPI AutoPay phase) | Native support for Indian Netbanking/UPI/Debit/Credit Card and UPI AutoPay in one provider; standard choice for Indian B2B SaaS |
 | Wallet/billing ledger | Append-only ledger table in Postgres (SQLAlchemy), org-scoped | Money-bearing balances must be auditable and reconstructable from history, not just a mutable balance column |
-| Invoicing | Server-generated PDF/HTML invoice per card or per batch, stored in object storage, linked from Postgres | Sellers need a durable, re-viewable record per billed action or batch; never regenerate an invoice's contents after issue |
+| Invoicing | Server-generated PDF/HTML invoice per wallet recharge, single line item "Visiting Card Recharge and Scoring", stored in object storage, linked from Postgres | Sellers need a durable, re-viewable record per recharge, not per individual/bulk parse action; never regenerate an invoice's contents after issue |
 | Analytics/charts | Recharts (pairs with shadcn/ui) on the dashboard page | Lead-type/industry/score breakdowns need charts, not just tables; keep it in the same design system as the rest of the UI |
 | Infra | Docker Compose (local), containers on AWS/GCP (prod) | Standard, portable, no vendor lock-in for a small early-stage service |
 | CI/CD | GitHub Actions | Matches the existing GitHub-hosted repo and installed GitHub plugin |
@@ -126,7 +126,7 @@ dashr-ai/
 - **Lead** — the join of Contact + Company + a computed product-fit Score, scoped to one Organization and Exhibition
 - **Wallet** — one INR prepaid balance **per User**, not per Organization; the balance itself is a derived/cached value, not the source of truth (the ledger is). A sub-user's wallet is entirely their own — there is no shared org-level balance and no admin spending authority over it
 - **WalletTransaction** — append-only ledger entry (recharge credit, parse/enrichment/scoring debit, or support-initiated adjustment), scoped to one User; never updated or deleted, only inserted
-- **Invoice** — generated per Card parsed or per batch of Cards parsed together, scoped to the User who performed the billable action, references the WalletTransaction(s) it covers; immutable once issued
+- **Invoice** — generated per Wallet recharge (never per card parsed or per batch), scoped to the User who made the recharge, references the recharge WalletTransaction it covers, carries a single service line item titled "Visiting Card Recharge and Scoring"; immutable once issued
 - **PricingRate** — configurable per-action rate (parse/enrichment/scoring, currently ₹5/₹3/₹2), versioned so historical invoices remain correct if rates change later
 
 ---
@@ -140,7 +140,7 @@ dashr-ai/
 - Wallet balance is only ever credited/debited through `billing.py`, and every credit/debit writes a `WalletTransaction` ledger row first — the cached `Wallet.balance` is derived from the ledger, never the other way around
 - Per-action pricing at launch: ₹5 per card parsed, ₹3 per enrichment, ₹2 per scoring, debited from the wallet of the user who triggered the action. These rates are configurable data in `billing.py`/`PricingRate`, not hardcoded — same rule as scoring weights
 - A Razorpay payment is only considered successful, and a wallet only credited, after webhook signature verification server-side — never on the strength of a client-side redirect/callback alone
-- An Invoice is generated per card parsed, or per batch when cards are parsed together in one bulk job, billed to the acting user and carrying that user's GST No./Billing Address from their profile. **Invoices are visible to the user who generated them, and to every admin of that user's Organization** — admin visibility into invoices is read-only, and does not extend to spending from or crediting the sub-user's wallet. Invoices are immutable once issued (corrections are new adjustment entries, not edits)
+- An Invoice is generated per Wallet recharge — never per card parsed or per batch of cards parsed — under a single service line item titled **"Visiting Card Recharge and Scoring"**, billed to the recharging user and carrying that user's GST No./Billing Address from their profile. Parse/enrichment/scoring debits still hit the ledger individually per action (for balance tracking), but they are not separately invoiced — the invoice is tied to the recharge transaction, not to each debit. **Invoices are visible to the user who generated them, and to every admin of that user's Organization** — admin visibility into invoices is read-only, and does not extend to spending from or crediting the sub-user's wallet. Invoices are immutable once issued (corrections are new adjustment entries, not edits)
 - A parse/enrich/score action must never be allowed to proceed, or be enqueued as billable Celery work, without first confirming sufficient balance in the **acting user's own wallet** — check-then-debit must be race-safe (e.g. a DB-level constraint or row lock), since concurrent bulk uploads by the same user can hit the same wallet at once
 
 ---
@@ -169,5 +169,6 @@ dashr-ai/
 - **Never hardcode per-action prices inline** — parse/enrichment/scoring rates live in `billing.py`/`PricingRate` as configurable data, mirroring the scoring-weights rule
 - **Never let a billable action (parse/enrich/score) run without a race-safe balance check on the acting user's own wallet** — concurrent bulk uploads can overdraw a wallet if debit isn't atomic with the balance check
 - **Never edit or delete an issued Invoice** — corrections are new ledger/adjustment entries, not mutations of past invoices
+- **Never generate an Invoice per card parsed or per batch** — invoicing is tied to the Wallet recharge event only, under the single service name "Visiting Card Recharge and Scoring"; parse/enrichment/scoring debits are ledger entries, not separate invoices
 - **Never omit GST No./Billing Address from a User's profile before generating their Invoices** — invoices are billed to the individual user, so those fields are required per-user, not inherited from the org
 - This file describes the target architecture for a repo that currently has no application code — when code starts landing, keep this file in sync with what's actually built rather than what was planned
