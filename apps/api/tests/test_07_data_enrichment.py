@@ -902,31 +902,15 @@ def test_get_card_detail_for_another_users_enriched_card_returns_404(
 
 # ==========================================================================
 # 10. No new paid-API/credential setting is introduced by this step.
+#
+# The standing regression version of this check now lives in
+# test_core_config_known_secrets.py — it inherently can't be scoped to just
+# this step's diff (it introspects the live Settings class, which reflects
+# every step's config additions, not just 07's), so keeping it here would
+# force every future step that legitimately adds a credential (e.g.
+# 14-wallet-recharge's Razorpay secrets) to keep editing this unrelated
+# file. See that file's docstring for the current whole-codebase allowlist.
 # ==========================================================================
-
-
-def test_no_new_api_key_or_secret_settings_were_introduced_by_this_step():
-    """DoD: 'No settings/config entry in this step requires an API key,
-    subscription, or paid credential of any kind — grep for _api_key/_secret
-    additions in core/config.py from this step's diff and confirm there are
-    none.' Encodes that check as a standing regression test: the only
-    settings fields matching that pattern are the ones that already existed
-    before this feature (auth's jwt_secret, vision's anthropic_api_key, and
-    object-storage's s3_secret_access_key) — every one of the eleven public
-    scraper sources added here is unauthenticated by design."""
-    pre_existing_secret_like_fields = {"jwt_secret", "anthropic_api_key", "s3_secret_access_key"}
-
-    current_secret_like_fields = {
-        name
-        for name in type(settings).model_fields
-        if "_api_key" in name or "_secret" in name
-    }
-
-    assert current_secret_like_fields == pre_existing_secret_like_fields, (
-        "a new '_api_key'/'_secret' settings field was introduced; this data-enrichment step is a hard "
-        f"no-paid-API constraint from the business — got {current_secret_like_fields!r}, expected exactly "
-        f"{pre_existing_secret_like_fields!r}"
-    )
 
 
 # ==========================================================================

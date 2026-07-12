@@ -131,3 +131,48 @@ class CardAlreadyScoredError(Exception):
     be re-scored, even after enrichment brings in better company data. There
     is deliberately no "already scored" bypass, unlike the original design;
     sellers must enrich a company before scoring a card, not after."""
+
+
+class InvalidRechargeAmountError(Exception):
+    """Raised when a wallet recharge amount falls outside the allowed band —
+    defense in depth behind the WalletRechargeRequest Pydantic validation."""
+
+
+class WebhookSignatureError(Exception):
+    """Raised by payments.verify_webhook_signature when the X-Razorpay-Signature
+    header is missing or doesn't match the raw request body. A wallet must
+    never be credited on the strength of a client-side callback alone, so
+    every recharge credit path runs through this check first."""
+
+
+class InsufficientBalanceError(Exception):
+    """Raised by billing.debit_wallet when the wallet's balance is lower than
+    the requested debit amount. Not yet raised by any router in this feature
+    — parse/enrich/score actions aren't wired to debit_wallet yet — but the
+    check is race-safe from day one so wiring it in later needs no rework."""
+
+
+class InvalidRechargeRequestError(Exception):
+    """Raised by payments.create_recharge_order when Razorpay rejects the
+    order request as malformed (its BadRequestError) — a client-caused 400,
+    distinct from PaymentProviderError's transient/server-side failures."""
+
+
+class PaymentProviderError(Exception):
+    """Raised by payments.py when a Razorpay SDK call fails for a reason
+    that isn't the caller's fault (GatewayError, ServerError, or any other
+    unexpected SDK failure) — routers never import `razorpay` or catch its
+    exception types directly; this is the one domain exception they see,
+    keeping the vendor SDK boundary inside services/payments.py."""
+
+
+class MalformedWebhookPayloadError(Exception):
+    """Raised by payments.handle_payment_captured when a payment.captured
+    event is missing required fields, or has fields that can't be parsed
+    (order_id/payment_id/amount/notes.user_id). The payload has already
+    passed signature verification by this point — this is a genuine
+    Razorpay event this app can't act on, not a forgery attempt — so it's
+    surfaced to the caller as 400 (malformed payload), never silently
+    treated as a no-op 200 and never allowed to crash into an unhandled
+    500. Distinct from an unrecognized-order-id or a different event type,
+    both of which remain legitimate 200 no-ops."""

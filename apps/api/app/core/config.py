@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     # call, so it's tuned (and can be changed) independently.
     summary_model: str = "claude-sonnet-5"
     summary_request_timeout_seconds: int = 15
+    razorpay_key_id: str = ""
+    razorpay_key_secret: str = ""
+    razorpay_webhook_secret: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
 

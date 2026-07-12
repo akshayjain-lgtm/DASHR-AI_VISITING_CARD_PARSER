@@ -432,6 +432,54 @@ export async function exportCards(cardIds: string[]): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
+export type WalletTransactionOut = {
+  wallet_transaction_id: string;
+  // "recharge_credit" | "parse_debit" | "enrichment_debit" | "scoring_debit" | "adjustment"
+  transaction_type: string;
+  // Pydantic v2 serializes Decimal to a JSON string, not a number.
+  amount_inr: string;
+  balance_after_inr: string;
+  razorpay_order_id: string | null;
+  razorpay_payment_id: string | null;
+  reference_id: string | null;
+  created_at: string;
+};
+
+export type WalletOut = {
+  balance_inr: string;
+  currency: "INR";
+  // Most recent 20 — listWalletTransactions() is the paginated full ledger.
+  transactions: WalletTransactionOut[];
+};
+
+export type WalletRechargeOut = {
+  razorpay_order_id: string;
+  razorpay_key_id: string;
+  amount_inr: string;
+  currency: "INR";
+};
+
+export function getWallet(): Promise<WalletOut> {
+  return request("/wallet");
+}
+
+export function listWalletTransactions(
+  params: { limit?: number; offset?: number } = {}
+): Promise<WalletTransactionOut[]> {
+  const query = new URLSearchParams();
+  if (params.limit != null) query.set("limit", String(params.limit));
+  if (params.offset != null) query.set("offset", String(params.offset));
+  const qs = query.toString();
+  return request(`/wallet/transactions${qs ? `?${qs}` : ""}`);
+}
+
+export function createWalletRecharge(amountInr: string): Promise<WalletRechargeOut> {
+  return request("/wallet/recharge", {
+    method: "POST",
+    body: JSON.stringify({ amount_inr: amountInr }),
+  });
+}
+
 export function listCards(
   params: {
     exhibition_id?: string;
