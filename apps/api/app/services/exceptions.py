@@ -55,6 +55,15 @@ class ExhibitionNotFoundError(Exception):
     """Raised when a referenced exhibition_id doesn't exist or isn't visible to the caller."""
 
 
+class ArchiveNotFoundError(Exception):
+    """Raised when a referenced archive_id doesn't exist or isn't visible to the caller."""
+
+
+class CorruptArchiveError(Exception):
+    """Raised when an uploaded zip/pdf's bytes don't actually decode as that container
+    format, even though it passed the content-type/magic-byte pre-filter."""
+
+
 class CardNotFoundError(Exception):
     """Raised when a referenced card_id doesn't exist or isn't visible to the caller."""
 

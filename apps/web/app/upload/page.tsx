@@ -11,12 +11,15 @@ import {
   createExhibition,
   enrichCompanies,
   enrichCompany,
+  getArchiveUpload,
   listCards,
   listExhibitions,
   processCards,
   scoreCard,
   scoreCards,
+  uploadArchive,
   uploadCards,
+  type ArchiveUploadOut,
   type CardOut,
   type ExhibitionOut,
 } from "@/lib/api";
@@ -42,7 +45,15 @@ export default function UploadPage() {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadedCount, setUploadedCount] = useState<number | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(
+    null
+  );
   const [exhibitionError, setExhibitionError] = useState<string | null>(null);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
+  // Archives (zip/pdf) picked alongside images in "Choose Files" upload
+  // asynchronously and expand into cards server-side, so each gets tracked
+  // here and polled independently rather than staged like image files.
+  const [activeArchives, setActiveArchives] = useState<ArchiveUploadOut[]>([]);
 
   const [cards, setCards] = useState<CardOut[]>([]);
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
@@ -164,6 +175,21 @@ export default function UploadPage() {
     });
   }, [rowScoringIds]);
 
+  // Auto-detects a zip/pdf container vs. a plain card photo, from the same
+  // "Choose Files"/drag-drop selection — checked by extension first since
+  // browsers report inconsistent Content-Type strings for zip in
+  // particular (application/zip, application/x-zip-compressed, or even
+  // application/octet-stream depending on OS/browser).
+  function isArchiveFile(file: File): boolean {
+    const name = file.name.toLowerCase();
+    if (name.endsWith(".zip") || name.endsWith(".pdf")) return true;
+    return (
+      file.type === "application/zip" ||
+      file.type === "application/x-zip-compressed" ||
+      file.type === "application/pdf"
+    );
+  }
+
   function addFiles(newFiles: FileList | File[]) {
     setFiles((prev) => [...prev, ...Array.from(newFiles)]);
   }
@@ -192,24 +218,110 @@ export default function UploadPage() {
     }
   }
 
+  // A single POST carrying all 200 allowed files at once (real phone photos
+  // run several MB each) is big enough to hit request size/timeout ceilings
+  // on proxies in between the browser and this app — especially a tunneled
+  // dev URL like a Codespaces forwarded port, which is why a batch of "only"
+  // 4-5 real photos could already fail. Splitting into small sequential
+  // requests keeps every individual request small regardless of how many
+  // files the user selected, without changing the server's per-request
+  // batch-size cap or the "up to 200 files" ask from the UI's perspective.
+  const UPLOAD_CHUNK_SIZE = 15;
+
+  // One "Choose Files"/drag-drop selection can mix plain card photos with
+  // zip/pdf containers — each type needs a different upload call (images go
+  // through the existing chunked bulk-upload endpoint, each archive through
+  // its own single-file endpoint that expands asynchronously), so this
+  // splits the staged files by type and uploads each group with its own
+  // error handling, rather than exposing that split as a second button.
   async function handleSubmit() {
     if (files.length === 0) return;
     setIsUploading(true);
     setUploadError(null);
+    setArchiveError(null);
     setUploadedCount(null);
-    try {
-      const response = await uploadCards(
-        isRealExhibitionSelected ? selectedExhibitionId : null,
-        files
-      );
-      setUploadedCount(response.batch_size);
-      setFiles([]);
-    } catch (err) {
-      setUploadError(err instanceof ApiError ? err.message : "Upload failed");
-    } finally {
-      setIsUploading(false);
+    setUploadProgress(null);
+
+    const exhibitionId = isRealExhibitionSelected ? selectedExhibitionId : null;
+    const imageFiles = files.filter((f) => !isArchiveFile(f));
+    const archiveFiles = files.filter(isArchiveFile);
+
+    let uploaded = 0;
+    let remainingImages: File[] = [];
+    let imageError: string | null = null;
+    if (imageFiles.length > 0) {
+      remainingImages = imageFiles;
+      try {
+        for (let i = 0; i < imageFiles.length; i += UPLOAD_CHUNK_SIZE) {
+          const chunk = imageFiles.slice(i, i + UPLOAD_CHUNK_SIZE);
+          const response = await uploadCards(exhibitionId, chunk);
+          uploaded += response.batch_size;
+          remainingImages = imageFiles.slice(i + UPLOAD_CHUNK_SIZE);
+          setUploadProgress({ done: uploaded, total: imageFiles.length });
+        }
+        remainingImages = [];
+      } catch (err) {
+        const baseMessage = err instanceof ApiError ? err.message : "Upload failed";
+        imageError =
+          uploaded > 0
+            ? `${baseMessage} — ${uploaded} of ${imageFiles.length} card${
+                imageFiles.length === 1 ? "" : "s"
+              } uploaded before this batch failed. The rest are still staged below; try again.`
+            : baseMessage;
+      }
     }
+
+    // Archives are uploaded one at a time, sequentially, after images —
+    // each is its own request/response (no chunking possible for a single
+    // container file), so a failure on one doesn't block the others.
+    const remainingArchiveFiles: File[] = [];
+    const newArchives: ArchiveUploadOut[] = [];
+    const archiveErrorParts: string[] = [];
+    for (const file of archiveFiles) {
+      try {
+        const archive = await uploadArchive(exhibitionId, file);
+        newArchives.push(archive);
+      } catch (err) {
+        remainingArchiveFiles.push(file);
+        archiveErrorParts.push(
+          `${file.name}: ${err instanceof ApiError ? err.message : "Upload failed"}`
+        );
+      }
+    }
+
+    if (uploaded > 0) setUploadedCount(uploaded);
+    setUploadError(imageError);
+    if (newArchives.length > 0) {
+      setActiveArchives((prev) => [...prev, ...newArchives]);
+    }
+    setArchiveError(archiveErrorParts.length > 0 ? archiveErrorParts.join("; ") : null);
+    // Only what actually failed (or was never attempted) stays staged, so
+    // retrying doesn't re-upload files that already succeeded.
+    setFiles([...remainingImages, ...remainingArchiveFiles]);
+    setIsUploading(false);
+    setUploadProgress(null);
   }
+
+  // Expansion happens in a Celery task (extracting up to 200 images can take
+  // a while), so this polls every still-processing archive's status and
+  // re-pulls the card list every 2s until each leaves "processing" — cards
+  // stream into the list below as the task creates them, reusing
+  // refreshCards exactly as-is.
+  const processingArchiveIds = activeArchives
+    .filter((a) => a.status === "processing")
+    .map((a) => a.archive_id);
+  useEffect(() => {
+    if (processingArchiveIds.length === 0) return;
+    const interval = setInterval(async () => {
+      const updates = await Promise.all(processingArchiveIds.map(getArchiveUpload));
+      setActiveArchives((prev) =>
+        prev.map((a) => updates.find((u) => u.archive_id === a.archive_id) ?? a)
+      );
+      refreshCards();
+    }, 2000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [processingArchiveIds.join(",")]);
 
   async function handleParseCards() {
     setIsParsing(true);
@@ -399,13 +511,13 @@ export default function UploadPage() {
         >
           <UploadCloud size={28} className="mx-auto mb-3 text-black/25" />
           <p className="text-sm text-black/50 mb-3">
-            Drag and drop card photos here, or
+            Drag and drop card photos, a ZIP, or a PDF here, or
           </p>
           <label className="inline-block">
             <input
               type="file"
               multiple
-              accept="image/*,.heic,.heif"
+              accept="image/*,.heic,.heif,.zip,.pdf,application/zip,application/x-zip-compressed,application/pdf"
               className="hidden"
               onChange={(e) => e.target.files && addFiles(e.target.files)}
             />
@@ -414,8 +526,8 @@ export default function UploadPage() {
             </span>
           </label>
           <p className="text-xs text-black/35 mt-3">
-            Supports JPG, PNG, WEBP, HEIC/HEIF &middot; up to 10MB per file &middot; max 200
-            files per upload
+            Supports JPG, PNG, WEBP, HEIC/HEIF, ZIP, PDF &middot; up to 10MB per photo &middot;
+            max 200 cards per upload &middot; file type is detected automatically
           </p>
         </div>
 
@@ -440,7 +552,11 @@ export default function UploadPage() {
 
         <div className="mt-6 flex items-center gap-4">
           <OBtn onClick={handleSubmit} disabled={files.length === 0 || isUploading}>
-            {isUploading ? "Uploading…" : `Upload ${files.length || ""} Card${files.length === 1 ? "" : "s"}`.trim()}
+            {isUploading
+              ? uploadProgress
+                ? `Uploading… (${uploadProgress.done}/${uploadProgress.total})`
+                : "Uploading…"
+              : `Upload ${files.length || ""} File${files.length === 1 ? "" : "s"}`.trim()}
           </OBtn>
         </div>
 
@@ -458,6 +574,49 @@ export default function UploadPage() {
             Cards&rdquo; below to start extraction.
           </div>
         )}
+
+        {archiveError && (
+          <div className="mt-4 border border-red-200 bg-red-50 px-4 py-3 flex items-start gap-2 text-sm text-red-700">
+            <AlertCircle size={15} className="shrink-0 mt-0.5" />
+            {archiveError}
+          </div>
+        )}
+
+        {/* One status row per zip/pdf picked in "Choose Files" — each
+            expands into cards asynchronously server-side, independent of
+            the plain-image upload above and of each other. */}
+        {activeArchives.map((archive) => (
+          <div key={archive.archive_id} className="mt-4">
+            {archive.status === "processing" && (
+              <div className="border border-black/10 bg-[#fafafa] px-4 py-3 flex items-start gap-2 text-sm text-black/60">
+                <Loader2 size={15} className="shrink-0 mt-0.5 animate-spin" />
+                Extracting cards from {archive.original_filename ?? "your file"}&hellip; this
+                can take a little while for large files.
+              </div>
+            )}
+            {archive.status === "completed" && (
+              <div className="border border-green-200 bg-green-50 px-4 py-3 flex items-start gap-2 text-sm text-green-700">
+                <CheckCircle2 size={15} className="shrink-0 mt-0.5" />
+                Finished extracting cards from {archive.original_filename ?? "your file"}.
+                Click &ldquo;Parse Cards&rdquo; below to start extraction.
+              </div>
+            )}
+            {archive.status === "completed_with_errors" && (
+              <div className="border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-2 text-sm text-amber-700">
+                <AlertCircle size={15} className="shrink-0 mt-0.5" />
+                {archive.original_filename}: finished with some issues —{" "}
+                {archive.error_message}
+              </div>
+            )}
+            {archive.status === "failed" && (
+              <div className="border border-red-200 bg-red-50 px-4 py-3 flex items-start gap-2 text-sm text-red-700">
+                <AlertCircle size={15} className="shrink-0 mt-0.5" />
+                {archive.original_filename}:{" "}
+                {archive.error_message ?? "Failed to process this file."}
+              </div>
+            )}
+          </div>
+        ))}
 
         {/* Card list */}
         <div className="mt-10">

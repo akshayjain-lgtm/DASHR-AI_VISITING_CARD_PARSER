@@ -1,10 +1,7 @@
-import io
 import logging
 import uuid
 
-import pillow_heif
 from fastapi import UploadFile
-from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -31,51 +28,13 @@ from app.services.exceptions import (
     InvalidReprocessStateError,
     UnsupportedFileTypeError,
 )
+from app.services.file_reading import read_limited, verify_image_content
 from app.services.visibility import scope_to_visible_users
 from app.workers.card_processing import process_card
 from app.workers.enrichment_processing import enrich_company_task
 from app.workers.scoring_processing import score_card_task
 
 logger = logging.getLogger(__name__)
-
-# Registers HEIC/HEIF as a Pillow-openable format (Pillow has no built-in
-# decoder for it). Must run in every process that opens uploaded images with
-# Pillow, not just this one — the Celery worker (extraction_service.py) opens
-# the same stored bytes in a separate process and needs its own registration.
-pillow_heif.register_heif_opener()
-
-_READ_CHUNK_SIZE = 65536
-
-# Only used to verify that a file's actual decoded bytes match its declared
-# content-type — NOT the source of truth for which types are allowed
-# (settings.allowed_card_image_content_types is). A type missing from this
-# map simply fails verification (safe default), it never raises a KeyError.
-# HEIC and HEIF both decode to Pillow's "HEIF" format name (pillow-heif
-# doesn't distinguish the two containers), so both content-types map to it.
-EXPECTED_IMAGE_FORMATS = {
-    "image/jpeg": "JPEG",
-    "image/png": "PNG",
-    "image/webp": "WEBP",
-    "image/heic": "HEIF",
-    "image/heif": "HEIF",
-}
-
-
-def _read_limited(file_obj, max_bytes: int) -> bytes:
-    """Reads at most ~max_bytes + one chunk before giving up, so an
-    oversized upload doesn't get fully buffered into memory before its size
-    is checked."""
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = file_obj.read(_READ_CHUNK_SIZE)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        total += len(chunk)
-        if total > max_bytes:
-            break
-    return b"".join(chunks)
 
 
 def _card_scoring_fields(card: VisitingCard) -> dict:
@@ -87,23 +46,6 @@ def _card_scoring_fields(card: VisitingCard) -> dict:
         "score_breakdown": card.score_breakdown,
         "scored_at": card.scored_at,
     }
-
-
-def _verify_image_content(data: bytes, content_type: str, filename: str | None) -> None:
-    """Confirms `data` actually decodes as an image matching the declared
-    content-type, rather than trusting the client-supplied header alone."""
-    try:
-        with Image.open(io.BytesIO(data)) as img:
-            img.verify()
-        with Image.open(io.BytesIO(data)) as img:
-            actual_format = img.format
-    except Exception:
-        raise UnsupportedFileTypeError(f"{filename or 'file'} is not a valid image")
-
-    if actual_format != EXPECTED_IMAGE_FORMATS.get(content_type):
-        raise UnsupportedFileTypeError(
-            f"{filename or 'file'} content does not match its declared type {content_type}"
-        )
 
 
 def _read_and_validate_batch(files: list[UploadFile]) -> list[tuple[UploadFile, bytes]]:
@@ -125,13 +67,13 @@ def _read_and_validate_batch(files: list[UploadFile]) -> list[tuple[UploadFile, 
             raise UnsupportedFileTypeError(
                 f"Unsupported file type for {f.filename}: {f.content_type}"
             )
-        data = _read_limited(f.file, settings.max_upload_file_size_bytes)
+        data = read_limited(f.file, settings.max_upload_file_size_bytes)
         if len(data) > settings.max_upload_file_size_bytes:
             raise FileTooLargeError(
                 f"{f.filename} exceeds the max size of "
                 f"{settings.max_upload_file_size_mb}MB"
             )
-        _verify_image_content(data, f.content_type, f.filename)
+        verify_image_content(data, f.content_type, f.filename)
         validated.append((f, data))
     return validated
 

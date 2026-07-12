@@ -24,6 +24,17 @@ class Settings(BaseSettings):
         default="image/jpeg,image/png,image/webp,image/heic,image/heif",
         alias="ALLOWED_CARD_IMAGE_CONTENT_TYPES",
     )
+    max_archive_file_size_mb: int = 300
+    # Raw zip central-directory entry count, checked before filtering to
+    # image-like names — zipfile has no built-in zip-bomb protection, and
+    # enumerating a maliciously entry-heavy zip is itself costly even at a
+    # tiny file size.
+    max_archive_raw_entry_count: int = 2000
+    pdf_render_dpi: int = 200
+    # Pre-render clamp — a PDF page's rendered pixel size is computed from
+    # its point size before rasterizing, and clamped to this so a
+    # maliciously huge page can't blow up worker memory.
+    max_pdf_page_edge_px: int = 4000
     anthropic_api_key: str = ""
     vision_model: str = "claude-sonnet-5"
     vision_request_timeout_seconds: int = 30
@@ -50,6 +61,10 @@ class Settings(BaseSettings):
     @property
     def max_upload_file_size_bytes(self) -> int:
         return self.max_upload_file_size_mb * 1024 * 1024
+
+    @property
+    def max_archive_file_size_bytes(self) -> int:
+        return self.max_archive_file_size_mb * 1024 * 1024
 
 
 settings = Settings()
