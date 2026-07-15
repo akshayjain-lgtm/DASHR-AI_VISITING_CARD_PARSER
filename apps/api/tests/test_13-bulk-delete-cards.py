@@ -93,6 +93,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as OrmSession
 
+from app.core.config import settings
 from app.main import app as fastapi_app
 from app.models.card_email import CardEmail
 from app.models.card_phone import CardPhone
@@ -271,27 +272,29 @@ def test_bulk_delete_missing_card_ids_field_returns_422(client, fake_otp_provide
     assert resp.status_code == 422, resp.text
 
 
-def test_bulk_delete_more_than_200_card_ids_returns_422(client, fake_otp_provider):
-    """Spec: `max_length=200`, 'same cap as CardEnrichRequest/CardScoreRequest
-    /CardExportRequest' — 201 ids must be rejected before any DB work."""
+def test_bulk_delete_more_than_max_bulk_upload_files_card_ids_returns_422(client, fake_otp_provider):
+    """Spec: `max_length=settings.max_bulk_upload_files`, 'same cap as
+    CardEnrichRequest/CardScoreRequest' — one over the cap must be rejected
+    before any DB work."""
     _authenticated_user(client, fake_otp_provider)
-    card_ids = [str(uuid.uuid4()) for _ in range(201)]
+    card_ids = [str(uuid.uuid4()) for _ in range(settings.max_bulk_upload_files + 1)]
     resp = _bulk_delete(client, card_ids)
     assert resp.status_code == 422, resp.text
 
 
-def test_bulk_delete_exactly_200_card_ids_is_schema_valid(client, fake_otp_provider):
-    """The boundary itself (200, inclusive) must NOT be rejected by
-    validation — distinct from the 201 over-cap case above. None of these ids
-    are real/visible, so the request should still succeed with everything
-    skipped, proving validation passed and the best-effort path ran."""
+def test_bulk_delete_exactly_max_bulk_upload_files_card_ids_is_schema_valid(client, fake_otp_provider):
+    """The boundary itself (max_bulk_upload_files, inclusive) must NOT be
+    rejected by validation — distinct from the over-cap case above. None of
+    these ids are real/visible, so the request should still succeed with
+    everything skipped, proving validation passed and the best-effort path
+    ran."""
     _authenticated_user(client, fake_otp_provider)
-    card_ids = [str(uuid.uuid4()) for _ in range(200)]
+    card_ids = [str(uuid.uuid4()) for _ in range(settings.max_bulk_upload_files)]
     resp = _bulk_delete(client, card_ids)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["deleted_count"] == 0
-    assert body["skipped_count"] == 200
+    assert body["skipped_count"] == settings.max_bulk_upload_files
 
 
 def test_bulk_delete_malformed_card_id_returns_422(client, fake_otp_provider):

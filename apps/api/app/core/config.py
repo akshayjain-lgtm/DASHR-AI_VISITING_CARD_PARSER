@@ -19,12 +19,12 @@ class Settings(BaseSettings):
     s3_secret_access_key: str = "minioadmin"
     s3_region: str = "us-east-1"
     max_upload_file_size_mb: int = 10
-    max_bulk_upload_files: int = 200
+    max_bulk_upload_files: int = 500
     allowed_card_image_content_types_raw: str = Field(
         default="image/jpeg,image/png,image/webp,image/heic,image/heif",
         alias="ALLOWED_CARD_IMAGE_CONTENT_TYPES",
     )
-    max_archive_file_size_mb: int = 300
+    max_archive_file_size_mb: int = 100
     # Raw zip central-directory entry count, checked before filtering to
     # image-like names — zipfile has no built-in zip-bomb protection, and
     # enumerating a maliciously entry-heavy zip is itself costly even at a

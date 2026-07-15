@@ -92,9 +92,19 @@ export default function UploadPage() {
   const isRealExhibitionSelected =
     selectedExhibitionId !== "" && selectedExhibitionId !== "all";
 
+  // GET /cards defaults to limit=50 (a sane default for a general browsing
+  // view), but this page's whole job is to let a seller bulk-select an
+  // entire just-uploaded batch to parse/enrich/score together — silently
+  // truncating that list at 50 would leave the rest of a bigger batch
+  // invisible to "select all" with no indication anything was cut off. Match
+  // the largest batch a single upload can ever produce (max_bulk_upload_files
+  // server-side) so every card from one batch is always loaded here.
+  const MAX_CARDS_PER_VIEW = 500;
+
   function refreshCards() {
     return listCards({
       include_folded: true,
+      limit: MAX_CARDS_PER_VIEW,
       ...(selectedExhibitionId === "all"
         ? {}
         : isRealExhibitionSelected
@@ -238,14 +248,14 @@ export default function UploadPage() {
     }
   }
 
-  // A single POST carrying all 200 allowed files at once (real phone photos
+  // A single POST carrying all 500 allowed files at once (real phone photos
   // run several MB each) is big enough to hit request size/timeout ceilings
   // on proxies in between the browser and this app — especially a tunneled
   // dev URL like a Codespaces forwarded port, which is why a batch of "only"
   // 4-5 real photos could already fail. Splitting into small sequential
   // requests keeps every individual request small regardless of how many
   // files the user selected, without changing the server's per-request
-  // batch-size cap or the "up to 200 files" ask from the UI's perspective.
+  // batch-size cap or the "up to 500 files" ask from the UI's perspective.
   const UPLOAD_CHUNK_SIZE = 15;
 
   // One "Choose Files"/drag-drop selection can mix plain card photos with
@@ -322,7 +332,7 @@ export default function UploadPage() {
     setUploadProgress(null);
   }
 
-  // Expansion happens in a Celery task (extracting up to 200 images can take
+  // Expansion happens in a Celery task (extracting up to 500 images can take
   // a while), so this polls every still-processing archive's status and
   // re-pulls the card list every 2s until each leaves "processing" — cards
   // stream into the list below as the task creates them, reusing
@@ -569,7 +579,7 @@ export default function UploadPage() {
           </label>
           <p className="text-xs text-black/35 mt-3">
             Supports JPG, PNG, WEBP, HEIC/HEIF, ZIP, PDF &middot; up to 10MB per photo &middot;
-            max 200 cards per upload &middot; file type is detected automatically
+            max 500 cards per upload &middot; file type is detected automatically
           </p>
         </div>
 

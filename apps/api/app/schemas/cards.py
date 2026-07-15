@@ -3,6 +3,8 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.config import settings
+
 
 class ExhibitionCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
@@ -144,11 +146,12 @@ class CardProcessResponse(BaseModel):
 
 
 class CardEnrichRequest(BaseModel):
-    # max_length matches settings.max_bulk_upload_files — a caller-picked
-    # selection can never legitimately exceed the largest batch that could
-    # have been uploaded, and this caps how many Celery tasks/DB lookups one
-    # request can trigger.
-    card_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+    # max_length is settings.max_bulk_upload_files itself, not a copy of it —
+    # a caller-picked selection can never legitimately exceed the largest
+    # batch that could have been uploaded, and this caps how many Celery
+    # tasks/DB lookups one request can trigger. Deriving it here means
+    # raising the upload cap can't silently drift out of sync with this one.
+    card_ids: list[uuid.UUID] = Field(min_length=1, max_length=settings.max_bulk_upload_files)
 
 
 class CardEnrichResponse(BaseModel):
@@ -157,7 +160,7 @@ class CardEnrichResponse(BaseModel):
 
 
 class CardScoreRequest(BaseModel):
-    card_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+    card_ids: list[uuid.UUID] = Field(min_length=1, max_length=settings.max_bulk_upload_files)
 
 
 class CardScoreResponse(BaseModel):
@@ -166,15 +169,16 @@ class CardScoreResponse(BaseModel):
 
 
 class CardExportRequest(BaseModel):
-    # Same cap as CardEnrichRequest/CardScoreRequest — also bounds the
-    # synchronous, in-request query count in card_service.export_cards (see
-    # its docstring). Don't raise this without re-evaluating whether export
-    # should become a Celery task instead.
+    # Deliberately NOT settings.max_bulk_upload_files (500) — this bounds the
+    # synchronous, in-request query count in card_service.export_cards,
+    # which does a per-card emails/phones query (see its docstring). Kept at
+    # the old 200-id cap until export becomes a Celery task; raise it only
+    # after re-evaluating that cost, not just to match the upload cap.
     card_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
 
 
 class CardBulkDeleteRequest(BaseModel):
-    card_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+    card_ids: list[uuid.UUID] = Field(min_length=1, max_length=settings.max_bulk_upload_files)
     # Same meaning as DELETE /cards/{card_id}'s confirm_cascade query param —
     # false on the first attempt; the caller resends the same request with
     # this set to true once the 409/child_count confirmation is accepted.
