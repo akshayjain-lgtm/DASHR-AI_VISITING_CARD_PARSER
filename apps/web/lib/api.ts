@@ -28,7 +28,14 @@ export class CardHasMergedChildrenError extends Error {
   }
 }
 
-function extractErrorMessage(body: unknown): string {
+// `bodyWasJson` distinguishes two very different failure modes that both
+// land here as "!res.ok": a real API error (FastAPI always responds with a
+// JSON {detail: ...} body) vs. a response that never reached our app at all
+// — an intermediary (a proxy, or a tunneled dev URL like a Codespaces
+// forwarded port) rejecting an oversized/slow request with its own HTML or
+// plain-text error page. The latter has no `detail` to show, and "Request
+// failed" alone left that indistinguishable from a genuine backend bug.
+function extractErrorMessage(body: unknown, bodyWasJson: boolean): string {
   const detail = (body as { detail?: unknown } | null)?.detail;
   if (typeof detail === "string") return detail;
   // FastAPI's default validation-error shape: an array of {loc, msg, type}.
@@ -36,7 +43,23 @@ function extractErrorMessage(body: unknown): string {
     const first = detail[0] as { msg?: unknown };
     if (typeof first?.msg === "string") return first.msg;
   }
+  if (!bodyWasJson) {
+    return (
+      "Didn't get a response from the server — the request likely never reached it. " +
+      "This usually means the file was too large or the connection timed out " +
+      "(tunneled dev URLs have their own limits below this app's). Try a smaller file " +
+      "or a more direct connection."
+    );
+  }
   return "Request failed";
+}
+
+async function parseErrorBody(res: Response): Promise<{ body: unknown; bodyWasJson: boolean }> {
+  try {
+    return { body: await res.json(), bodyWasJson: true };
+  } catch {
+    return { body: null, bodyWasJson: false };
+  }
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -47,8 +70,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   });
 
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new ApiError(res.status, extractErrorMessage(body));
+    const { body, bodyWasJson } = await parseErrorBody(res);
+    throw new ApiError(res.status, extractErrorMessage(body, bodyWasJson));
   }
 
   if (res.status === 204) return undefined as T;
@@ -66,8 +89,8 @@ async function requestMultipart<T>(path: string, formData: FormData): Promise<T>
   });
 
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new ApiError(res.status, extractErrorMessage(body));
+    const { body, bodyWasJson } = await parseErrorBody(res);
+    throw new ApiError(res.status, extractErrorMessage(body, bodyWasJson));
   }
 
   return res.json();
@@ -327,19 +350,21 @@ export async function deleteCard(cardId: string, confirmCascade = false): Promis
   });
   if (res.status === 204) return;
 
-  const body = await res.json().catch(() => ({}));
+  const { body, bodyWasJson } = await parseErrorBody(res);
   // 409 is overloaded: a {child_count} body means "cascade confirmation
   // needed" (CardHasMergedChildrenError); any other 409 (e.g. a concurrent
   // merge landed mid-delete) is a generic, retryable ApiError instead.
   if (
     res.status === 409 &&
-    typeof body?.detail === "object" &&
-    body.detail !== null &&
-    "child_count" in body.detail
+    typeof (body as { detail?: unknown } | null)?.detail === "object" &&
+    (body as { detail: unknown }).detail !== null &&
+    "child_count" in (body as { detail: Record<string, unknown> }).detail
   ) {
-    throw new CardHasMergedChildrenError(Number(body.detail.child_count));
+    throw new CardHasMergedChildrenError(
+      Number((body as { detail: { child_count: unknown } }).detail.child_count)
+    );
   }
-  throw new ApiError(res.status, extractErrorMessage(body));
+  throw new ApiError(res.status, extractErrorMessage(body, bodyWasJson));
 }
 
 // Same 409-overload handling as deleteCard (a {child_count} body means
@@ -356,23 +381,25 @@ export async function bulkDeleteCards(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ card_ids: cardIds, confirm_cascade: confirmCascade }),
   });
-  const body = await res.json().catch(() => ({}));
-  if (res.ok) return body;
+  const { body, bodyWasJson } = await parseErrorBody(res);
+  if (res.ok) return body as { deleted_count: number; skipped_count: number };
 
   if (
     res.status === 409 &&
-    typeof body?.detail === "object" &&
-    body.detail !== null &&
-    "child_count" in body.detail
+    typeof (body as { detail?: unknown } | null)?.detail === "object" &&
+    (body as { detail: unknown }).detail !== null &&
+    "child_count" in (body as { detail: Record<string, unknown> }).detail
   ) {
-    throw new CardHasMergedChildrenError(Number(body.detail.child_count));
+    throw new CardHasMergedChildrenError(
+      Number((body as { detail: { child_count: unknown } }).detail.child_count)
+    );
   }
-  throw new ApiError(res.status, extractErrorMessage(body));
+  throw new ApiError(res.status, extractErrorMessage(body, bodyWasJson));
 }
 
 export function processCards(
   params: { exhibitionId?: string; cardIds?: string[] } = {}
-): Promise<{ enqueued_count: number }> {
+): Promise<{ enqueued_count: number; wallet_blocked_count: number }> {
   return request("/cards/process", {
     method: "POST",
     body: JSON.stringify({
@@ -384,7 +411,7 @@ export function processCards(
 
 export function enrichCompanies(
   cardIds: string[]
-): Promise<{ enqueued_count: number; skipped_count: number }> {
+): Promise<{ enqueued_count: number; skipped_count: number; wallet_blocked_count: number }> {
   return request("/cards/enrich-companies", {
     method: "POST",
     body: JSON.stringify({ card_ids: cardIds }),
@@ -397,7 +424,7 @@ export function scoreCard(cardId: string): Promise<CardOut> {
 
 export function scoreCards(
   cardIds: string[]
-): Promise<{ enqueued_count: number; skipped_count: number }> {
+): Promise<{ enqueued_count: number; skipped_count: number; wallet_blocked_count: number }> {
   return request("/cards/score", {
     method: "POST",
     body: JSON.stringify({ card_ids: cardIds }),
@@ -417,8 +444,8 @@ export async function exportCards(cardIds: string[]): Promise<void> {
   });
 
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new ApiError(res.status, extractErrorMessage(body));
+    const { body, bodyWasJson } = await parseErrorBody(res);
+    throw new ApiError(res.status, extractErrorMessage(body, bodyWasJson));
   }
 
   const blob = await res.blob();
@@ -446,6 +473,9 @@ export type WalletTransactionOut = {
   razorpay_order_id: string | null;
   razorpay_payment_id: string | null;
   reference_id: string | null;
+  // How many parse/enrich/score actions this row covers — 1 for a single
+  // card, >1 for a collective bulk-batch debit.
+  quantity: number;
   created_at: string;
 };
 
@@ -454,6 +484,9 @@ export type WalletOut = {
   currency: "INR";
   // Most recent 20 — listWalletTransactions() is the paginated full ledger.
   transactions: WalletTransactionOut[];
+  // Each action type's own independent free-action count remaining, floored
+  // at 0 once exhausted.
+  free_actions_remaining: { parse: number; enrichment: number; scoring: number };
 };
 
 export type WalletRechargeOut = {

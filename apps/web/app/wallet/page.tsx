@@ -126,6 +126,13 @@ export default function WalletPage() {
                 <IndianRupee size={22} strokeWidth={2.5} />
                 {loading ? "…" : balance.toLocaleString("en-IN")}
               </p>
+              {wallet && (
+                <p className="text-[11px] text-black/40 mt-1">
+                  Free actions left — Parse {wallet.free_actions_remaining.parse}, Enrichment{" "}
+                  {wallet.free_actions_remaining.enrichment}, Scoring{" "}
+                  {wallet.free_actions_remaining.scoring}
+                </p>
+              )}
             </div>
           </div>
 
@@ -175,6 +182,9 @@ export default function WalletPage() {
               >
                 <div>
                   <TransactionTypeBadge type={txn.transaction_type} />
+                  {txn.quantity > 1 && (
+                    <p className="text-[11px] text-black/40 mt-1">on {txn.quantity} cards</p>
+                  )}
                 </div>
                 <div className={parseFloat(txn.amount_inr) < 0 ? "text-black/70" : "text-[#E65527] font-bold"}>
                   {parseFloat(txn.amount_inr) < 0 ? "" : "+"}

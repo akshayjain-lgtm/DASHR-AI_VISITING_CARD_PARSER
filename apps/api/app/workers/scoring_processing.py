@@ -9,7 +9,7 @@ from app.models.company import Company
 from app.models.company_signals import CompanySignals
 from app.models.user import User
 from app.models.visiting_card import VisitingCard
-from app.services import profile_service, scoring
+from app.services import billing, profile_service, scoring
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -22,11 +22,19 @@ _MAX_SCORING_RETRIES = 3
     bind=True,
     max_retries=_MAX_SCORING_RETRIES,
 )
-def score_card_task(self, card_id: str) -> None:
+def score_card_task(self, card_id: str, billed: bool = False) -> None:
     """Computes and persists lead_score/score_breakdown/scored_at for one
     card. Never changes card.status — scored_at being non-null is the only
     signal that a card has been scored, exactly as Company.enrichment_status
     (not VisitingCard.status) is the signal for enrichment completion.
+
+    `billed` is whatever the enqueuing card_service call determined this
+    charge to be (True if paid, False if free) — see process_card's
+    docstring for the full rationale; refunded via billing.refund_action if
+    retries are exhausted below. Unlike process_card/enrich_company_task,
+    there is no persistent "failed" status for scoring (see the idempotency
+    note below) — the refund is the only durable trace a permanent scoring
+    failure leaves in the data model today.
 
     Idempotency note: unlike process_card/enrich_company_task, scoring does
     no external I/O and so has no in-flight status to transition through —
@@ -85,6 +93,9 @@ def score_card_task(self, card_id: str) -> None:
             except MaxRetriesExceededError:
                 logger.error(
                     "score_card_task: exhausted retries for card_id=%s: %s", card_id, exc
+                )
+                billing.refund_action(
+                    db, card.user_id, "scoring", billed=billed, reference_id=card.card_id
                 )
             return
 

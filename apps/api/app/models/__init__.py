@@ -5,6 +5,7 @@ from app.models.company import Company
 from app.models.company_enrichment import CompanyEnrichment
 from app.models.company_signals import CompanySignals
 from app.models.exhibition import Exhibition
+from app.models.free_action_allowance import FreeActionAllowance
 from app.models.organization import Organization
 from app.models.phone_otp_verification import PhoneOtpVerification
 from app.models.pricing_rate import PricingRate
@@ -30,4 +31,5 @@ __all__ = [
     "PricingRate",
     "Wallet",
     "WalletTransaction",
+    "FreeActionAllowance",
 ]

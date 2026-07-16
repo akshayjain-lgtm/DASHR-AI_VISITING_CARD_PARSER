@@ -26,6 +26,10 @@ class PricingRate(Base):
     # "parse" | "enrichment" | "scoring"
     action_type: Mapped[str]
     rate_inr: Mapped[Decimal] = mapped_column(Numeric)
+    # Free-action cap for this action type, versioned alongside rate_inr on
+    # the same row — a free-limit change becomes a new row via effective_from,
+    # same as a rate change.
+    free_limit: Mapped[int] = mapped_column(server_default=text("20"))
     effective_from: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=text("now()")
     )

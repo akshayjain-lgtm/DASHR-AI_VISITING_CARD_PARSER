@@ -322,6 +322,14 @@ function createUploadApiMock(initialCard: CardOut) {
     if (method === "GET" && /^\/api\/exhibitions/.test(url)) {
       return jsonResponse(200, [] as ExhibitionOut[]);
     }
+    if (method === "GET" && url === "/api/wallet") {
+      return jsonResponse(200, {
+        balance_inr: "0",
+        currency: "INR",
+        transactions: [],
+        free_actions_remaining: { parse: 20, enrichment: 20, scoring: 20 },
+      });
+    }
     if (method === "GET" && /^\/api\/cards(\?.*)?$/.test(url)) {
       getCallCount += 1;
       if (getCallCount >= 3) {
@@ -441,6 +449,14 @@ function createBulkUploadApiMock(initialCards: CardOut[], scoreAtCallCount: Reco
 
     if (method === "GET" && /^\/api\/exhibitions/.test(url)) {
       return jsonResponse(200, [] as ExhibitionOut[]);
+    }
+    if (method === "GET" && url === "/api/wallet") {
+      return jsonResponse(200, {
+        balance_inr: "0",
+        currency: "INR",
+        transactions: [],
+        free_actions_remaining: { parse: 20, enrichment: 20, scoring: 20 },
+      });
     }
     if (method === "GET" && /^\/api\/cards(\?.*)?$/.test(url)) {
       getCallCount += 1;

@@ -168,6 +168,14 @@ function createApiMock(opts: {
     if (method === "GET" && /^\/api\/exhibitions/.test(url)) {
       return jsonResponse(200, opts.exhibitions ?? sampleExhibitions);
     }
+    if (method === "GET" && url === "/api/wallet") {
+      return jsonResponse(200, {
+        balance_inr: "0",
+        currency: "INR",
+        transactions: [],
+        free_actions_remaining: { parse: 20, enrichment: 20, scoring: 20 },
+      });
+    }
     if (method === "GET" && /^\/api\/cards\?/.test(url)) {
       return jsonResponse(200, cardsState);
     }

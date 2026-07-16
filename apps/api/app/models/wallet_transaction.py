@@ -47,9 +47,16 @@ class WalletTransaction(Base):
     balance_after_inr: Mapped[Decimal] = mapped_column(Numeric)
     razorpay_order_id: Mapped[str | None]
     razorpay_payment_id: Mapped[str | None]
-    # e.g. card_id for debit rows, once a future step wires debit_wallet
-    # into the parse/enrich/score endpoints.
+    # e.g. card_id for a single-action debit row (quantity=1); always NULL
+    # for a collective bulk-action row (quantity>1), since there's no one
+    # card to point at — see quantity below.
     reference_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    # How many parse/enrich/score actions this single row covers. 1 for a
+    # single-card action or a recharge/adjustment; >1 for a bulk parse/
+    # enrich/score batch, which is billed as one collective ledger row
+    # (amount_inr = rate * quantity) rather than one row per card, so the
+    # transaction history stays readable for a large batch.
+    quantity: Mapped[int] = mapped_column(server_default=text("1"))
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=text("now()")
     )

@@ -5,6 +5,7 @@ from app.core.config import settings
 from app.deps import get_current_user, get_db
 from app.models.user import User
 from app.schemas.wallet import (
+    FreeActionsRemaining,
     WalletOut,
     WalletRechargeOut,
     WalletRechargeRequest,
@@ -27,9 +28,16 @@ def get_wallet(
 ):
     wallet = billing.get_wallet(db, user.user_id)
     transactions = billing.list_transactions(db, user.user_id, limit=20, offset=0)
+    free_actions_remaining = FreeActionsRemaining(
+        **{
+            action_type: billing.get_free_actions_remaining(db, user.user_id, action_type)
+            for action_type in billing.ACTION_TYPES
+        }
+    )
     return WalletOut(
         balance_inr=wallet.balance_inr,
         transactions=[WalletTransactionOut.model_validate(t) for t in transactions],
+        free_actions_remaining=free_actions_remaining,
     )
 
 

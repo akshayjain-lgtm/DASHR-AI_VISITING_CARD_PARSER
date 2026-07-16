@@ -12,6 +12,7 @@ import {
   enrichCompanies,
   enrichCompany,
   getArchiveUpload,
+  getWallet,
   listCards,
   listExhibitions,
   processCards,
@@ -22,6 +23,7 @@ import {
   type ArchiveUploadOut,
   type CardOut,
   type ExhibitionOut,
+  type WalletOut,
 } from "@/lib/api";
 import {
   bulkDeleteConfirmCopy,
@@ -82,8 +84,15 @@ export default function UploadPage() {
   const [bulkScoreTargetIds, setBulkScoreTargetIds] = useState<Set<string> | null>(null);
   const [bulkScoreTotal, setBulkScoreTotal] = useState<number | null>(null);
 
+  const [wallet, setWallet] = useState<WalletOut | null>(null);
+
+  function refreshWallet() {
+    return getWallet().then(setWallet);
+  }
+
   useEffect(() => {
     listExhibitions().then(setExhibitions);
+    refreshWallet();
   }, []);
 
   // Real, upload-able/parse-able exhibition selected — excludes the two
@@ -92,9 +101,19 @@ export default function UploadPage() {
   const isRealExhibitionSelected =
     selectedExhibitionId !== "" && selectedExhibitionId !== "all";
 
+  // GET /cards defaults to limit=50 (a sane default for a general browsing
+  // view), but this page's whole job is to let a seller bulk-select an
+  // entire just-uploaded batch to parse/enrich/score together — silently
+  // truncating that list at 50 would leave the rest of a bigger batch
+  // invisible to "select all" with no indication anything was cut off. Match
+  // the largest batch a single upload can ever produce (max_bulk_upload_files
+  // server-side) so every card from one batch is always loaded here.
+  const MAX_CARDS_PER_VIEW = 500;
+
   function refreshCards() {
     return listCards({
       include_folded: true,
+      limit: MAX_CARDS_PER_VIEW,
       ...(selectedExhibitionId === "all"
         ? {}
         : isRealExhibitionSelected
@@ -238,14 +257,14 @@ export default function UploadPage() {
     }
   }
 
-  // A single POST carrying all 200 allowed files at once (real phone photos
+  // A single POST carrying all 500 allowed files at once (real phone photos
   // run several MB each) is big enough to hit request size/timeout ceilings
   // on proxies in between the browser and this app — especially a tunneled
   // dev URL like a Codespaces forwarded port, which is why a batch of "only"
   // 4-5 real photos could already fail. Splitting into small sequential
   // requests keeps every individual request small regardless of how many
   // files the user selected, without changing the server's per-request
-  // batch-size cap or the "up to 200 files" ask from the UI's perspective.
+  // batch-size cap or the "up to 500 files" ask from the UI's perspective.
   const UPLOAD_CHUNK_SIZE = 15;
 
   // One "Choose Files"/drag-drop selection can mix plain card photos with
@@ -322,7 +341,7 @@ export default function UploadPage() {
     setUploadProgress(null);
   }
 
-  // Expansion happens in a Celery task (extracting up to 200 images can take
+  // Expansion happens in a Celery task (extracting up to 500 images can take
   // a while), so this polls every still-processing archive's status and
   // re-pulls the card list every 2s until each leaves "processing" — cards
   // stream into the list below as the task creates them, reusing
@@ -343,16 +362,29 @@ export default function UploadPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [processingArchiveIds.join(",")]);
 
+  // Shared copy for the three bulk parse/enrich/score actions' wallet-
+  // blocked banner — differs only by the past-tense verb.
+  function walletBlockedMessage(count: number, verb: string): string {
+    return (
+      `${count} card${count === 1 ? "" : "s"} could not be ${verb} — wallet balance too low. ` +
+      "Recharge your wallet to continue."
+    );
+  }
+
   async function handleParseCards() {
     setIsParsing(true);
     setParseError(null);
     try {
-      await processCards({
+      const result = await processCards({
         exhibitionId: isRealExhibitionSelected ? selectedExhibitionId : undefined,
         cardIds: parseEligibleSelected.map((c) => c.card_id),
       });
       clearSelection();
       await refreshCards();
+      await refreshWallet();
+      if (result.wallet_blocked_count > 0) {
+        setParseError(walletBlockedMessage(result.wallet_blocked_count, "parsed"));
+      }
     } catch (err) {
       setParseError(err instanceof ApiError ? err.message : "Failed to start parsing");
     } finally {
@@ -364,9 +396,13 @@ export default function UploadPage() {
     setIsEnriching(true);
     setEnrichError(null);
     try {
-      await enrichCompanies(enrichEligibleSelected.map((c) => c.card_id));
+      const result = await enrichCompanies(enrichEligibleSelected.map((c) => c.card_id));
       clearSelection();
       await refreshCards();
+      await refreshWallet();
+      if (result.wallet_blocked_count > 0) {
+        setEnrichError(walletBlockedMessage(result.wallet_blocked_count, "enriched"));
+      }
     } catch (err) {
       setEnrichError(err instanceof ApiError ? err.message : "Failed to start enrichment");
     } finally {
@@ -380,6 +416,7 @@ export default function UploadPage() {
     try {
       await enrichCompany(cardId);
       await refreshCards();
+      await refreshWallet();
     } catch (err) {
       setRowEnrichError(err instanceof ApiError ? err.message : "Failed to start enrichment");
     } finally {
@@ -410,9 +447,13 @@ export default function UploadPage() {
     setIsScoring(true);
     setScoreError(null);
     try {
-      await scoreCards(targetIds);
+      const result = await scoreCards(targetIds);
       clearSelection();
       await refreshCards();
+      await refreshWallet();
+      if (result.wallet_blocked_count > 0) {
+        setScoreError(walletBlockedMessage(result.wallet_blocked_count, "scored"));
+      }
     } catch (err) {
       setScoreError(err instanceof ApiError ? err.message : "Failed to start scoring");
       setRowScoringIds((prev) => {
@@ -440,6 +481,7 @@ export default function UploadPage() {
       // Still refresh once immediately so a fast score doesn't wait for the
       // next 2s poll tick.
       await refreshCards();
+      await refreshWallet();
     } catch (err) {
       setRowScoreError(err instanceof ApiError ? err.message : "Failed to start scoring");
       setRowScoringIds((prev) => {
@@ -569,7 +611,7 @@ export default function UploadPage() {
           </label>
           <p className="text-xs text-black/35 mt-3">
             Supports JPG, PNG, WEBP, HEIC/HEIF, ZIP, PDF &middot; up to 10MB per photo &middot;
-            max 200 cards per upload &middot; file type is detected automatically
+            max 500 cards per upload &middot; file type is detected automatically
           </p>
         </div>
 
@@ -663,14 +705,24 @@ export default function UploadPage() {
         {/* Card list */}
         <div className="mt-10">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-black uppercase tracking-wider text-black/35">
-              Cards{" "}
-              {selectedExhibitionId === "all"
-                ? "across all exhibitions"
-                : isRealExhibitionSelected
-                ? "in this exhibition"
-                : "in general capture"}
-            </h2>
+            <div>
+              <h2 className="text-sm font-black uppercase tracking-wider text-black/35">
+                Cards{" "}
+                {selectedExhibitionId === "all"
+                  ? "across all exhibitions"
+                  : isRealExhibitionSelected
+                  ? "in this exhibition"
+                  : "in general capture"}
+              </h2>
+              {wallet && (
+                <p className="text-[11px] text-black/40 mt-1">
+                  Wallet: ₹{wallet.balance_inr} · Free left — Parse{" "}
+                  {wallet.free_actions_remaining.parse}, Enrich{" "}
+                  {wallet.free_actions_remaining.enrichment}, Score{" "}
+                  {wallet.free_actions_remaining.scoring}
+                </p>
+              )}
+            </div>
             {cards.length > 0 && (
               <div className="flex items-center gap-3">
                 {/* Parse is the mandatory first pipeline step every card
@@ -924,7 +976,15 @@ export default function UploadPage() {
         <CardDetailDrawer
           cardId={selectedCardId}
           onClose={() => setSelectedCardId(null)}
-          onChanged={refreshCards}
+          onChanged={() => {
+            refreshCards();
+            // The drawer's own retry/enrich/score actions charge the wallet
+            // synchronously, just like the upload page's own row/bulk
+            // actions — without this, the header balance/free-actions
+            // indicator only picked up a drawer-triggered charge on a full
+            // page reload.
+            refreshWallet();
+          }}
           onNavigateToCard={setSelectedCardId}
         />
       )}

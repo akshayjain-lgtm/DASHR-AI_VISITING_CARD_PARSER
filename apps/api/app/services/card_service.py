@@ -1,5 +1,6 @@
 import logging
 import uuid
+from typing import Callable
 
 from fastapi import UploadFile
 from sqlalchemy import select
@@ -14,7 +15,7 @@ from app.models.company_signals import CompanySignals
 from app.models.exhibition import Exhibition
 from app.models.user import User
 from app.models.visiting_card import VisitingCard
-from app.services import exhibition_service, storage_service
+from app.services import billing, exhibition_service, storage_service
 from app.services.exceptions import (
     BatchTooLargeError,
     CardAlreadyScoredError,
@@ -204,20 +205,74 @@ def list_cards(
     ]
 
 
+def _charge_and_enqueue(
+    db: Session,
+    user_id: uuid.UUID,
+    action_type: str,
+    eligible: list[VisitingCard],
+    enqueue_one: Callable[[VisitingCard, bool], None],
+) -> tuple[int, int]:
+    """Shared charge-then-enqueue-subset sequence for enqueue_processing/
+    enqueue_enrichment/enqueue_scoring: charges the whole eligible batch as
+    one collective WalletTransaction (billing.charge_for_bulk_action, not
+    one row per card), then calls enqueue_one(card, billed) for only the
+    first `chargeable` of them, in list order — the remainder is left
+    untouched (still retryable) and reported as wallet-blocked.
+
+    charge_for_bulk_action returns (free_used, paid_used): the first
+    free_used of the chargeable subset were free, the rest were billed —
+    that per-card billed flag is passed into enqueue_one so the Celery task
+    itself can call billing.refund_action if the actual parse/enrich/score
+    work later fails (see process_card/enrich_company_task/score_card_task).
+
+    enqueue_one failures (the .delay() call itself raising, never reaching
+    the broker) are logged and moved past rather than failing the rest of
+    the batch; unlike a task that WAS enqueued and later fails, that rare
+    case is not refunded here — the card is still eligible for a future
+    bulk retry with a fresh charge, whereas refunding immediately would risk
+    a double-refund if the message actually did reach the broker despite
+    the raised exception (Celery's own docs note this ambiguity for some
+    broker transports).
+
+    Returns (enqueued_count, wallet_blocked_count).
+    """
+    if not eligible:
+        return 0, 0
+
+    free_used, paid_used = billing.charge_for_bulk_action(
+        db, user_id, action_type, len(eligible), reference_id=eligible[0].card_id
+    )
+    chargeable = free_used + paid_used
+
+    enqueued = 0
+    for index, card in enumerate(eligible[:chargeable]):
+        billed = index >= free_used
+        try:
+            enqueue_one(card, billed)
+        except Exception:
+            logger.exception(
+                "Failed to enqueue %s action for card_id=%s", action_type, card.card_id
+            )
+        enqueued += 1
+
+    return enqueued, len(eligible) - chargeable
+
+
 def enqueue_processing(
     db: Session,
     current_user: User,
     exhibition_id: uuid.UUID | None,
     card_ids: list[uuid.UUID] | None = None,
-) -> int:
+) -> tuple[int, int]:
     """The explicit "Parse Cards" CTA action — enqueues process_card for
     every status='new' card visible to current_user (own cards, or every org
     member's if admin), optionally narrowed to one exhibition and/or to a
     specific set of card_ids (a client-picked selection — still re-validated
-    here for visibility and status, never trusted as-is). Returns the
-    number of cards matched/attempted, mirroring reprocess_card's
-    log-and-move-on handling of broker failures rather than letting one
-    enqueue failure fail the whole batch."""
+    here for visibility and status, never trusted as-is; a duplicate id in
+    the caller's own list is naturally collapsed by the SQL IN clause below,
+    never double-counted). Returns (enqueued_count, wallet_blocked_count):
+    cards this batch can't afford are left status='new' and skipped rather
+    than enqueued, so they stay retryable once the user is funded."""
     stmt = scope_to_visible_users(select(VisitingCard), current_user, VisitingCard.user_id).where(
         VisitingCard.status == "new"
     )
@@ -226,16 +281,14 @@ def enqueue_processing(
     if card_ids is not None:
         stmt = stmt.where(VisitingCard.card_id.in_(card_ids))
 
-    cards = db.scalars(stmt).all()
-    for card in cards:
-        try:
-            process_card.delay(str(card.card_id))
-        except Exception:
-            logger.exception(
-                "Failed to enqueue process_card for card_id=%s", card.card_id
-            )
-
-    return len(cards)
+    cards = list(db.scalars(stmt).all())
+    return _charge_and_enqueue(
+        db,
+        current_user.user_id,
+        "parse",
+        cards,
+        lambda card, billed: process_card.delay(str(card.card_id), billed=billed),
+    )
 
 
 def to_card_out(db: Session, card: VisitingCard) -> dict:
@@ -268,12 +321,23 @@ def to_card_out(db: Session, card: VisitingCard) -> dict:
     }
 
 
-def get_visible_card(db: Session, current_user: User, card_id: uuid.UUID) -> VisitingCard:
+def get_visible_card(
+    db: Session, current_user: User, card_id: uuid.UUID, *, for_update: bool = False
+) -> VisitingCard:
     """Mirrors exhibition_service.get_visible_exhibition — raises
     CardNotFoundError if the card doesn't exist or isn't visible to
-    current_user under the admin-sees-org-member rule."""
+    current_user under the admin-sees-org-member rule.
+
+    Pass for_update=True to lock the row (SELECT ... FOR UPDATE) for the
+    rest of this transaction — used by reprocess_card so a concurrent
+    duplicate reprocess request for the same card blocks until the first
+    one commits, then correctly re-reads the (now "new", not "failed")
+    status and is rejected, instead of both requests racing past the
+    eligibility check and both getting charged for one reprocess."""
     stmt = scope_to_visible_users(select(VisitingCard), current_user, VisitingCard.user_id)
     stmt = stmt.where(VisitingCard.card_id == card_id)
+    if for_update:
+        stmt = stmt.with_for_update()
     card = db.scalar(stmt)
     if card is None:
         raise CardNotFoundError()
@@ -463,19 +527,34 @@ def _export_row(
 
 
 def reprocess_card(db: Session, current_user: User, card_id: uuid.UUID) -> VisitingCard:
-    card = get_visible_card(db, current_user, card_id)
+    # Locked for the rest of this transaction (see get_visible_card's
+    # for_update docstring) — closes the race where two concurrent
+    # reprocess requests for the same failed card could otherwise both pass
+    # the status check below and both get charged for one reprocess.
+    card = get_visible_card(db, current_user, card_id, for_update=True)
     if card.status != "failed":
         raise InvalidReprocessStateError()
 
+    # Stage the flip without committing yet — charge_for_action's own
+    # commit (below) persists this together with the charge as one atomic
+    # transaction, so a failed charge (InsufficientBalanceError, which rolls
+    # back before raising) also rolls back this staged change, leaving the
+    # card exactly as it was (still "failed"), never half-flipped to "new".
     card.status = "new"
     card.extraction_error = None
-    db.commit()
+    billed = billing.charge_for_action(db, current_user.user_id, "parse", reference_id=card.card_id)
     db.refresh(card)
 
     try:
-        process_card.delay(str(card.card_id))
+        process_card.delay(str(card.card_id), billed=billed)
     except Exception:
         logger.exception("Failed to enqueue reprocess for card_id=%s", card.card_id)
+        # The enqueue itself never reached the broker — this work was never
+        # even attempted, unlike a task that ran and failed (e.g. bad OCR),
+        # which stays non-refundable. Reverse the charge so the user isn't
+        # billed for an action that will never run; the card stays "new"
+        # and remains retryable via a later bulk "Parse Cards" action.
+        billing.refund_action(db, current_user.user_id, "parse", billed=billed, reference_id=card.card_id)
 
     return card
 
@@ -495,11 +574,20 @@ def enrich_company_now(db: Session, current_user: User, card_id: uuid.UUID) -> V
     if company is None or company.enrichment_status != "pending":
         raise CompanyNotEligibleForEnrichmentError()
 
+    billed = billing.charge_for_action(
+        db, current_user.user_id, "enrichment", reference_id=card.card_id
+    )
+
     try:
-        enrich_company_task.delay(str(card.company_id), str(card.card_id))
+        enrich_company_task.delay(str(card.company_id), str(card.card_id), billed=billed)
     except Exception:
         logger.exception(
             "Failed to enqueue enrich_company_task for company_id=%s", card.company_id
+        )
+        # Never even queued — reverse the charge (see reprocess_card's
+        # identical rationale).
+        billing.refund_action(
+            db, current_user.user_id, "enrichment", billed=billed, reference_id=card.card_id
         )
 
     return card
@@ -507,19 +595,27 @@ def enrich_company_now(db: Session, current_user: User, card_id: uuid.UUID) -> V
 
 def enqueue_enrichment(
     db: Session, current_user: User, card_ids: list[uuid.UUID]
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """Bulk counterpart to enrich_company_now — the "Enrich Selected" CTA.
 
     Unlike enrich_company_now, an ineligible card_id (not visible, no linked
-    company, company not "pending", or a company already enqueued earlier in
-    this same call) is silently skipped and counted in skipped_count rather
-    than raising: this is a best-effort batch over a user-picked selection,
-    not the single guarded action enrich_company_now already is. Never
-    enqueues the same company twice in one call — two selected cards can
-    legitimately share one still-pending Company row.
+    company, company not "pending", or a company already mapped to an
+    earlier id in this same call) is silently skipped and counted in
+    skipped_count rather than raising: this is a best-effort batch over a
+    user-picked selection, not the single guarded action enrich_company_now
+    already is. Never enqueues the same company twice in one call — two
+    selected cards can legitimately share one still-pending Company row,
+    and this same dedup also naturally absorbs an exact-duplicate card_id in
+    the caller's own list (the second occurrence maps to an already-seen
+    company_id and is skipped, never charged/enqueued twice).
+
+    The whole eligible batch is charged as one collective WalletTransaction
+    (billing.charge_for_bulk_action) covering however many of it the wallet
+    can afford, not one ledger row per card; any remainder is wallet-blocked
+    and left untouched (still "pending", still retryable).
     """
-    enqueued = 0
     skipped = 0
+    eligible: list[VisitingCard] = []
     seen_company_ids: set[uuid.UUID] = set()
     for card_id in card_ids:
         try:
@@ -538,15 +634,18 @@ def enqueue_enrichment(
             continue
 
         seen_company_ids.add(card.company_id)
-        try:
-            enrich_company_task.delay(str(card.company_id), str(card.card_id))
-        except Exception:
-            logger.exception(
-                "Failed to enqueue enrich_company_task for company_id=%s", card.company_id
-            )
-        enqueued += 1
+        eligible.append(card)
 
-    return enqueued, skipped
+    enqueued, wallet_blocked = _charge_and_enqueue(
+        db,
+        current_user.user_id,
+        "enrichment",
+        eligible,
+        lambda card, billed: enrich_company_task.delay(
+            str(card.company_id), str(card.card_id), billed=billed
+        ),
+    )
+    return enqueued, skipped, wallet_blocked
 
 
 def score_card_now(db: Session, current_user: User, card_id: uuid.UUID) -> VisitingCard:
@@ -563,27 +662,47 @@ def score_card_now(db: Session, current_user: User, card_id: uuid.UUID) -> Visit
     if card.lead_score is not None:
         raise CardAlreadyScoredError()
 
+    billed = billing.charge_for_action(db, current_user.user_id, "scoring", reference_id=card.card_id)
+
     try:
-        score_card_task.delay(str(card.card_id))
+        score_card_task.delay(str(card.card_id), billed=billed)
     except Exception:
         logger.exception("Failed to enqueue score_card_task for card_id=%s", card.card_id)
+        # Never even queued — reverse the charge (see reprocess_card's
+        # identical rationale).
+        billing.refund_action(db, current_user.user_id, "scoring", billed=billed, reference_id=card.card_id)
 
     return card
 
 
 def enqueue_scoring(
     db: Session, current_user: User, card_ids: list[uuid.UUID]
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """Bulk counterpart to score_card_now — the "Score" bulk CTA.
 
     Unlike enqueue_enrichment, there's no company-level dedupe needed here:
-    scoring is purely per-card, so every eligible id enqueues its own task.
-    Same one-shot rule as score_card_now: already-scored cards are skipped
-    (counted in skipped_count) rather than re-enqueued.
+    scoring is purely per-card, so every eligible id enqueues its own task —
+    which is exactly why an exact-duplicate card_id in the caller's own list
+    must be explicitly de-duplicated below (unlike enqueue_enrichment, there
+    is no company-level grouping to accidentally absorb a repeated id):
+    without it, one card_id repeated N times would be charged and enqueued
+    N times over for what is really one card. Same one-shot rule as
+    score_card_now: already-scored cards are skipped (counted in
+    skipped_count) rather than re-enqueued.
+
+    The whole eligible batch is charged as one collective WalletTransaction
+    (billing.charge_for_bulk_action) covering however many of it the wallet
+    can afford, not one ledger row per card.
     """
-    enqueued = 0
     skipped = 0
+    eligible: list[VisitingCard] = []
+    seen_card_ids: set[uuid.UUID] = set()
     for card_id in card_ids:
+        if card_id in seen_card_ids:
+            skipped += 1
+            continue
+        seen_card_ids.add(card_id)
+
         try:
             card = get_visible_card(db, current_user, card_id)
         except CardNotFoundError:
@@ -594,13 +713,16 @@ def enqueue_scoring(
             skipped += 1
             continue
 
-        try:
-            score_card_task.delay(str(card.card_id))
-        except Exception:
-            logger.exception("Failed to enqueue score_card_task for card_id=%s", card.card_id)
-        enqueued += 1
+        eligible.append(card)
 
-    return enqueued, skipped
+    enqueued, wallet_blocked = _charge_and_enqueue(
+        db,
+        current_user.user_id,
+        "scoring",
+        eligible,
+        lambda card, billed: score_card_task.delay(str(card.card_id), billed=billed),
+    )
+    return enqueued, skipped, wallet_blocked
 
 
 def delete_card(

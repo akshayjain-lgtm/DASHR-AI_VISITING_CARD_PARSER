@@ -706,7 +706,9 @@ def test_enrich_company_endpoint_enqueues_with_company_and_card_id_never_gstin(
     assert args == (str(card.company_id), str(card.card_id)), (
         "enrich_company_task.delay must be called with (company_id, card_id) positionally"
     )
-    assert kwargs == {}
+    # billed=False: a fresh user's first enrichment is covered by the free
+    # allowance (15-wallet-usage), not billed from the wallet.
+    assert kwargs == {"billed": False}
     _assert_gstin_never_appears(captured, gstin)
 
 
