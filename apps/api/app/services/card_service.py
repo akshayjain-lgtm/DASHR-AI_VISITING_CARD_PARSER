@@ -423,10 +423,21 @@ def get_card_detail(db: Session, current_user: User, card_id: uuid.UUID) -> dict
     }
 
 
+_EXPORT_ELIGIBLE_STATUSES = frozenset({"new", "extracted"})
+
+
 def export_cards(db: Session, current_user: User, card_ids: list[uuid.UUID]) -> list[dict]:
     """Best-effort batch read for POST /cards/export. Ids not visible to
     current_user (wrong owner, different org, or nonexistent) are silently
-    dropped rather than raising.
+    dropped rather than raising, as are visible cards whose status isn't in
+    _EXPORT_ELIGIBLE_STATUSES: 'failed' (no usable extracted data),
+    'duplicate' (its data was already folded into the card it matched),
+    'processing' (extraction hasn't finished yet — nothing to export), or
+    'merged' (folded into a sibling card, same as 'duplicate') — same
+    silent-skip treatment, not an error. Expressed as an allow-list rather
+    than a deny-list of those four so a status added to the model later
+    defaults to excluded (safer for a "silently skip, no error" contract)
+    rather than silently start exporting.
 
     The visibility check and the Company/CompanySignals/Exhibition lookups
     are all batched into one query each — none of those are 1:many off
@@ -440,13 +451,15 @@ def export_cards(db: Session, current_user: User, card_ids: list[uuid.UUID]) -> 
     """
     cards = db.scalars(
         scope_to_visible_users(select(VisitingCard), current_user, VisitingCard.user_id).where(
-            VisitingCard.card_id.in_(card_ids)
+            VisitingCard.card_id.in_(card_ids),
+            VisitingCard.status.in_(_EXPORT_ELIGIBLE_STATUSES),
         )
     ).all()
     cards_by_id = {c.card_id: c for c in cards}
     # Preserves the caller's requested order (the DB's return order for an
     # IN(...) query is unspecified) and silently drops any id that wasn't
-    # visible/found — the "best-effort" contract POST /cards/export promises.
+    # visible/found, or whose card is excluded by status — the "best-effort"
+    # contract POST /cards/export promises.
     ordered_cards = [cards_by_id[cid] for cid in card_ids if cid in cards_by_id]
     if not ordered_cards:
         return []
