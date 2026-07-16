@@ -16,7 +16,19 @@ class WalletTransactionOut(BaseModel):
     razorpay_order_id: str | None
     razorpay_payment_id: str | None
     reference_id: uuid.UUID | None
+    # How many parse/enrich/score actions this row covers — 1 for a single
+    # card, >1 for a collective bulk-batch debit (see charge_for_bulk_action).
+    quantity: int
     created_at: datetime
+
+
+class FreeActionsRemaining(BaseModel):
+    """Each action type's own independent free-action count remaining,
+    floored at 0 once exhausted — never a shared/blended pool (CLAUDE.md)."""
+
+    parse: int
+    enrichment: int
+    scoring: int
 
 
 class WalletOut(BaseModel):
@@ -25,6 +37,7 @@ class WalletOut(BaseModel):
     # Most recent 20 transactions — GET /wallet/transactions is the
     # paginated full-ledger endpoint.
     transactions: list[WalletTransactionOut]
+    free_actions_remaining: FreeActionsRemaining
 
 
 class WalletRechargeRequest(BaseModel):

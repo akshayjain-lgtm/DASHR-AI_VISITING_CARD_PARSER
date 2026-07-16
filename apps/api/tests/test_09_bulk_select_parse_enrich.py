@@ -273,7 +273,7 @@ def test_process_cards_without_card_ids_enqueues_only_status_new_cards_in_scope(
     resp = client.post("/cards/process", json={})
 
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"enqueued_count": 1}, (
+    assert resp.json() == {"enqueued_count": 1, "wallet_blocked_count": 0}, (
         "with no card_ids, only the single status='new' card in scope must be counted"
     )
     assert len(captured) == 1, "exactly one process_card.delay call must be made"
@@ -324,7 +324,7 @@ def test_process_cards_with_card_ids_only_enqueues_eligible_and_visible_subset(
     )
 
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"enqueued_count": 1}, (
+    assert resp.json() == {"enqueued_count": 1, "wallet_blocked_count": 0}, (
         "only the eligible-and-visible id in the submitted list must be counted"
     )
     assert len(captured) == 1, "exactly one process_card.delay call must be made"
@@ -405,9 +405,11 @@ def test_enrich_companies_enqueues_only_the_pending_company_card_among_four_inel
     )
 
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"enqueued_count": 1, "skipped_count": 3}
+    assert resp.json() == {"enqueued_count": 1, "skipped_count": 3, "wallet_blocked_count": 0}
     assert len(captured) == 1, "exactly one enrich_company_task.delay call must be made"
-    assert captured[0] == ((str(pending_card.company_id), pending_card_id), {}), (
+    # billed=False: a fresh user's first enrichment is covered by the free
+    # allowance (15-wallet-usage), not billed from the wallet.
+    assert captured[0] == ((str(pending_card.company_id), pending_card_id), {"billed": False}), (
         f"enrich_company_task.delay must be enqueued with (company_id, card_id) for the pending "
         f"card only, got {captured[0]!r}"
     )
@@ -456,11 +458,13 @@ def test_enrich_companies_dedupes_two_cards_sharing_the_same_pending_company(
     resp = client.post("/cards/enrich-companies", json={"card_ids": [card_a_id, card_b_id]})
 
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"enqueued_count": 1, "skipped_count": 1}
+    assert resp.json() == {"enqueued_count": 1, "skipped_count": 1, "wallet_blocked_count": 0}
     assert len(captured) == 1, (
         "the shared company must be enqueued exactly once, never twice, across both card ids"
     )
-    assert captured[0] == ((str(card_a.company_id), card_a_id), {}), (
+    # billed=False: a fresh user's first enrichment is covered by the free
+    # allowance (15-wallet-usage), not billed from the wallet.
+    assert captured[0] == ((str(card_a.company_id), card_a_id), {"billed": False}), (
         "the first card id in the request mapping to the not-yet-seen company must be the one "
         f"enqueued, got {captured[0]!r}"
     )
@@ -505,7 +509,7 @@ def test_enrich_companies_for_another_orgs_card_is_skipped_not_raised(
         f"a card belonging to another org must be silently skipped, never a 403/500, "
         f"got {resp.status_code}: {resp.text}"
     )
-    assert resp.json() == {"enqueued_count": 0, "skipped_count": 1}
+    assert resp.json() == {"enqueued_count": 0, "skipped_count": 1, "wallet_blocked_count": 0}
     assert captured == [], "another org's card must never be enqueued for enrichment"
 
 

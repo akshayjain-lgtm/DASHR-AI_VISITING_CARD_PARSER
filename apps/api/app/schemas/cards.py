@@ -137,12 +137,19 @@ class CardProcessRequest(BaseModel):
     exhibition_id: uuid.UUID | None = None
     # When provided, narrows enqueueing to just these ids (still re-validated
     # server-side for visibility + status == "new"); when omitted, behavior is
-    # unchanged — all "new" cards in scope.
-    card_ids: list[uuid.UUID] | None = None
+    # unchanged — all "new" cards in scope. max_length matches
+    # CardEnrichRequest/CardScoreRequest/CardBulkDeleteRequest — this
+    # endpoint now drives a real wallet charge (charge_for_bulk_action), so
+    # its billing surface is bounded the same way as the other bulk actions.
+    card_ids: list[uuid.UUID] | None = Field(default=None, max_length=settings.max_bulk_upload_files)
 
 
 class CardProcessResponse(BaseModel):
     enqueued_count: int
+    # Matched but not enqueued because the acting user's free parse
+    # allowance was exhausted and their wallet balance couldn't cover the
+    # parse rate — distinct from enqueued_count, never silently merged into it.
+    wallet_blocked_count: int
 
 
 class CardEnrichRequest(BaseModel):
@@ -156,7 +163,12 @@ class CardEnrichRequest(BaseModel):
 
 class CardEnrichResponse(BaseModel):
     enqueued_count: int
+    # Ineligible for enrichment (no linked company, company not "pending",
+    # or a duplicate company already enqueued this batch) — never a wallet block.
     skipped_count: int
+    # Eligible but not enqueued because the free enrichment allowance was
+    # exhausted and the wallet balance couldn't cover the enrichment rate.
+    wallet_blocked_count: int
 
 
 class CardScoreRequest(BaseModel):
@@ -165,7 +177,12 @@ class CardScoreRequest(BaseModel):
 
 class CardScoreResponse(BaseModel):
     enqueued_count: int
+    # Ineligible for scoring (not "extracted" yet, or already scored) —
+    # never a wallet block.
     skipped_count: int
+    # Eligible but not enqueued because the free scoring allowance was
+    # exhausted and the wallet balance couldn't cover the scoring rate.
+    wallet_blocked_count: int
 
 
 class CardExportRequest(BaseModel):

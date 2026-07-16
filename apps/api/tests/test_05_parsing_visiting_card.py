@@ -980,7 +980,7 @@ def test_reprocess_failed_card_resets_to_new_clears_error_and_reenqueues(
     enqueued: list[str] = []
     monkeypatch.setattr(
         "app.services.card_service.process_card.delay",
-        lambda cid: enqueued.append(cid),
+        lambda cid, **kwargs: enqueued.append(cid),
     )
 
     resp = client.post(f"/cards/{card_id}/reprocess")

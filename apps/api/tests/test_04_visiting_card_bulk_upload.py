@@ -393,7 +393,7 @@ def test_bulk_upload_enqueues_one_process_card_task_per_created_card(
     enqueued_card_ids: list[str] = []
     monkeypatch.setattr(
         "app.services.card_service.process_card.delay",
-        lambda card_id: enqueued_card_ids.append(card_id),
+        lambda card_id, **kwargs: enqueued_card_ids.append(card_id),
     )
 
     files = [(f"card_{i}.jpg", jpeg_bytes, "image/jpeg") for i in range(3)]

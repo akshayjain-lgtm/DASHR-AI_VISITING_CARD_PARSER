@@ -399,7 +399,7 @@ export async function bulkDeleteCards(
 
 export function processCards(
   params: { exhibitionId?: string; cardIds?: string[] } = {}
-): Promise<{ enqueued_count: number }> {
+): Promise<{ enqueued_count: number; wallet_blocked_count: number }> {
   return request("/cards/process", {
     method: "POST",
     body: JSON.stringify({
@@ -411,7 +411,7 @@ export function processCards(
 
 export function enrichCompanies(
   cardIds: string[]
-): Promise<{ enqueued_count: number; skipped_count: number }> {
+): Promise<{ enqueued_count: number; skipped_count: number; wallet_blocked_count: number }> {
   return request("/cards/enrich-companies", {
     method: "POST",
     body: JSON.stringify({ card_ids: cardIds }),
@@ -424,7 +424,7 @@ export function scoreCard(cardId: string): Promise<CardOut> {
 
 export function scoreCards(
   cardIds: string[]
-): Promise<{ enqueued_count: number; skipped_count: number }> {
+): Promise<{ enqueued_count: number; skipped_count: number; wallet_blocked_count: number }> {
   return request("/cards/score", {
     method: "POST",
     body: JSON.stringify({ card_ids: cardIds }),
@@ -473,6 +473,9 @@ export type WalletTransactionOut = {
   razorpay_order_id: string | null;
   razorpay_payment_id: string | null;
   reference_id: string | null;
+  // How many parse/enrich/score actions this row covers — 1 for a single
+  // card, >1 for a collective bulk-batch debit.
+  quantity: number;
   created_at: string;
 };
 
@@ -481,6 +484,9 @@ export type WalletOut = {
   currency: "INR";
   // Most recent 20 — listWalletTransactions() is the paginated full ledger.
   transactions: WalletTransactionOut[];
+  // Each action type's own independent free-action count remaining, floored
+  // at 0 once exhausted.
+  free_actions_remaining: { parse: number; enrichment: number; scoring: number };
 };
 
 export type WalletRechargeOut = {

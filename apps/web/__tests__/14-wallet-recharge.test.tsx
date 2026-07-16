@@ -39,6 +39,7 @@ const emptyWallet: WalletOut = {
   balance_inr: "0",
   currency: "INR",
   transactions: [],
+  free_actions_remaining: { parse: 20, enrichment: 20, scoring: 20 },
 };
 
 function makeTransaction(params: {
@@ -46,6 +47,7 @@ function makeTransaction(params: {
   transaction_type: string;
   amount_inr: string;
   balance_after_inr: string;
+  quantity?: number;
   created_at?: string;
 }): WalletTransactionOut {
   return {
@@ -56,6 +58,7 @@ function makeTransaction(params: {
     razorpay_order_id: null,
     razorpay_payment_id: null,
     reference_id: null,
+    quantity: params.quantity ?? 1,
     created_at: params.created_at ?? "2026-07-10T12:00:00Z",
   };
 }
@@ -144,6 +147,7 @@ describe("Wallet page balance and history", () => {
     const wallet: WalletOut = {
       balance_inr: "450",
       currency: "INR",
+      free_actions_remaining: { parse: 20, enrichment: 20, scoring: 20 },
       transactions: [
         makeTransaction({
           wallet_transaction_id: "txn-1",
@@ -169,6 +173,37 @@ describe("Wallet page balance and history", () => {
     expect(screen.getByText("Card Parse")).toBeInTheDocument();
     expect(screen.getByText("+₹500")).toBeInTheDocument();
     expect(screen.getByText("₹50")).toBeInTheDocument();
+  });
+
+  it("shows 'on N cards' for a collective bulk-batch transaction, and nothing extra for a single-card one", async () => {
+    const wallet: WalletOut = {
+      balance_inr: "450",
+      currency: "INR",
+      free_actions_remaining: { parse: 20, enrichment: 20, scoring: 20 },
+      transactions: [
+        makeTransaction({
+          wallet_transaction_id: "txn-bulk",
+          transaction_type: "parse_debit",
+          amount_inr: "-50",
+          balance_after_inr: "450",
+          quantity: 10,
+        }),
+        makeTransaction({
+          wallet_transaction_id: "txn-single",
+          transaction_type: "scoring_debit",
+          amount_inr: "-2",
+          balance_after_inr: "500",
+          quantity: 1,
+        }),
+      ],
+    };
+    const { fetchMock } = createApiMock({ wallet, transactions: wallet.transactions });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<WalletPage />);
+
+    expect(await screen.findByText("on 10 cards")).toBeInTheDocument();
+    expect(screen.queryByText(/on 1 cards?/)).not.toBeInTheDocument();
   });
 
   it("shows an empty state when there are no transactions yet", async () => {

@@ -35,6 +35,7 @@ from app.services.exceptions import (
     EmptyBatchError,
     ExhibitionNotFoundError,
     FileTooLargeError,
+    InsufficientBalanceError,
     InvalidReprocessStateError,
     UnsupportedFileTypeError,
 )
@@ -94,8 +95,10 @@ def process_cards(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    count = card_service.enqueue_processing(db, user, body.exhibition_id, body.card_ids)
-    return CardProcessResponse(enqueued_count=count)
+    enqueued, wallet_blocked = card_service.enqueue_processing(
+        db, user, body.exhibition_id, body.card_ids
+    )
+    return CardProcessResponse(enqueued_count=enqueued, wallet_blocked_count=wallet_blocked)
 
 
 @router.post("/enrich-companies", response_model=CardEnrichResponse)
@@ -104,8 +107,10 @@ def enrich_companies(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    enqueued, skipped = card_service.enqueue_enrichment(db, user, body.card_ids)
-    return CardEnrichResponse(enqueued_count=enqueued, skipped_count=skipped)
+    enqueued, skipped, wallet_blocked = card_service.enqueue_enrichment(db, user, body.card_ids)
+    return CardEnrichResponse(
+        enqueued_count=enqueued, skipped_count=skipped, wallet_blocked_count=wallet_blocked
+    )
 
 
 @router.post("/score", response_model=CardScoreResponse)
@@ -114,8 +119,10 @@ def score_cards(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    enqueued, skipped = card_service.enqueue_scoring(db, user, body.card_ids)
-    return CardScoreResponse(enqueued_count=enqueued, skipped_count=skipped)
+    enqueued, skipped, wallet_blocked = card_service.enqueue_scoring(db, user, body.card_ids)
+    return CardScoreResponse(
+        enqueued_count=enqueued, skipped_count=skipped, wallet_blocked_count=wallet_blocked
+    )
 
 
 @router.post("/export")
@@ -201,6 +208,11 @@ def reprocess_card(
         raise HTTPException(status_code=404, detail="Card not found")
     except InvalidReprocessStateError:
         raise HTTPException(status_code=409, detail="Card is not in a failed state")
+    except InsufficientBalanceError:
+        raise HTTPException(
+            status_code=402,
+            detail="Wallet balance too low to reprocess this card — recharge your wallet to continue",
+        )
     return CardOut.model_validate(card_service.to_card_out(db, card))
 
 
@@ -219,6 +231,11 @@ def enrich_company(
     except CompanyNotEligibleForEnrichmentError:
         raise HTTPException(
             status_code=409, detail="Company enrichment has already been started or completed"
+        )
+    except InsufficientBalanceError:
+        raise HTTPException(
+            status_code=402,
+            detail="Wallet balance too low to enrich this company — recharge your wallet to continue",
         )
     return CardOut.model_validate(card_service.to_card_out(db, card))
 
@@ -239,6 +256,11 @@ def score_card(
         )
     except CardAlreadyScoredError:
         raise HTTPException(status_code=409, detail="Card has already been scored")
+    except InsufficientBalanceError:
+        raise HTTPException(
+            status_code=402,
+            detail="Wallet balance too low to score this card — recharge your wallet to continue",
+        )
     return CardOut.model_validate(card_service.to_card_out(db, card))
 
 

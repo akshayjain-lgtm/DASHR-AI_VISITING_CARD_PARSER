@@ -12,6 +12,7 @@ import {
   enrichCompanies,
   enrichCompany,
   getArchiveUpload,
+  getWallet,
   listCards,
   listExhibitions,
   processCards,
@@ -22,6 +23,7 @@ import {
   type ArchiveUploadOut,
   type CardOut,
   type ExhibitionOut,
+  type WalletOut,
 } from "@/lib/api";
 import {
   bulkDeleteConfirmCopy,
@@ -82,8 +84,15 @@ export default function UploadPage() {
   const [bulkScoreTargetIds, setBulkScoreTargetIds] = useState<Set<string> | null>(null);
   const [bulkScoreTotal, setBulkScoreTotal] = useState<number | null>(null);
 
+  const [wallet, setWallet] = useState<WalletOut | null>(null);
+
+  function refreshWallet() {
+    return getWallet().then(setWallet);
+  }
+
   useEffect(() => {
     listExhibitions().then(setExhibitions);
+    refreshWallet();
   }, []);
 
   // Real, upload-able/parse-able exhibition selected — excludes the two
@@ -353,16 +362,29 @@ export default function UploadPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [processingArchiveIds.join(",")]);
 
+  // Shared copy for the three bulk parse/enrich/score actions' wallet-
+  // blocked banner — differs only by the past-tense verb.
+  function walletBlockedMessage(count: number, verb: string): string {
+    return (
+      `${count} card${count === 1 ? "" : "s"} could not be ${verb} — wallet balance too low. ` +
+      "Recharge your wallet to continue."
+    );
+  }
+
   async function handleParseCards() {
     setIsParsing(true);
     setParseError(null);
     try {
-      await processCards({
+      const result = await processCards({
         exhibitionId: isRealExhibitionSelected ? selectedExhibitionId : undefined,
         cardIds: parseEligibleSelected.map((c) => c.card_id),
       });
       clearSelection();
       await refreshCards();
+      await refreshWallet();
+      if (result.wallet_blocked_count > 0) {
+        setParseError(walletBlockedMessage(result.wallet_blocked_count, "parsed"));
+      }
     } catch (err) {
       setParseError(err instanceof ApiError ? err.message : "Failed to start parsing");
     } finally {
@@ -374,9 +396,13 @@ export default function UploadPage() {
     setIsEnriching(true);
     setEnrichError(null);
     try {
-      await enrichCompanies(enrichEligibleSelected.map((c) => c.card_id));
+      const result = await enrichCompanies(enrichEligibleSelected.map((c) => c.card_id));
       clearSelection();
       await refreshCards();
+      await refreshWallet();
+      if (result.wallet_blocked_count > 0) {
+        setEnrichError(walletBlockedMessage(result.wallet_blocked_count, "enriched"));
+      }
     } catch (err) {
       setEnrichError(err instanceof ApiError ? err.message : "Failed to start enrichment");
     } finally {
@@ -390,6 +416,7 @@ export default function UploadPage() {
     try {
       await enrichCompany(cardId);
       await refreshCards();
+      await refreshWallet();
     } catch (err) {
       setRowEnrichError(err instanceof ApiError ? err.message : "Failed to start enrichment");
     } finally {
@@ -420,9 +447,13 @@ export default function UploadPage() {
     setIsScoring(true);
     setScoreError(null);
     try {
-      await scoreCards(targetIds);
+      const result = await scoreCards(targetIds);
       clearSelection();
       await refreshCards();
+      await refreshWallet();
+      if (result.wallet_blocked_count > 0) {
+        setScoreError(walletBlockedMessage(result.wallet_blocked_count, "scored"));
+      }
     } catch (err) {
       setScoreError(err instanceof ApiError ? err.message : "Failed to start scoring");
       setRowScoringIds((prev) => {
@@ -450,6 +481,7 @@ export default function UploadPage() {
       // Still refresh once immediately so a fast score doesn't wait for the
       // next 2s poll tick.
       await refreshCards();
+      await refreshWallet();
     } catch (err) {
       setRowScoreError(err instanceof ApiError ? err.message : "Failed to start scoring");
       setRowScoringIds((prev) => {
@@ -673,14 +705,24 @@ export default function UploadPage() {
         {/* Card list */}
         <div className="mt-10">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-black uppercase tracking-wider text-black/35">
-              Cards{" "}
-              {selectedExhibitionId === "all"
-                ? "across all exhibitions"
-                : isRealExhibitionSelected
-                ? "in this exhibition"
-                : "in general capture"}
-            </h2>
+            <div>
+              <h2 className="text-sm font-black uppercase tracking-wider text-black/35">
+                Cards{" "}
+                {selectedExhibitionId === "all"
+                  ? "across all exhibitions"
+                  : isRealExhibitionSelected
+                  ? "in this exhibition"
+                  : "in general capture"}
+              </h2>
+              {wallet && (
+                <p className="text-[11px] text-black/40 mt-1">
+                  Wallet: ₹{wallet.balance_inr} · Free left — Parse{" "}
+                  {wallet.free_actions_remaining.parse}, Enrich{" "}
+                  {wallet.free_actions_remaining.enrichment}, Score{" "}
+                  {wallet.free_actions_remaining.scoring}
+                </p>
+              )}
+            </div>
             {cards.length > 0 && (
               <div className="flex items-center gap-3">
                 {/* Parse is the mandatory first pipeline step every card
@@ -934,7 +976,15 @@ export default function UploadPage() {
         <CardDetailDrawer
           cardId={selectedCardId}
           onClose={() => setSelectedCardId(null)}
-          onChanged={refreshCards}
+          onChanged={() => {
+            refreshCards();
+            // The drawer's own retry/enrich/score actions charge the wallet
+            // synchronously, just like the upload page's own row/bulk
+            // actions — without this, the header balance/free-actions
+            // indicator only picked up a drawer-triggered charge on a full
+            // page reload.
+            refreshWallet();
+          }}
           onNavigateToCard={setSelectedCardId}
         />
       )}
