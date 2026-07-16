@@ -1,13 +1,13 @@
 # Spec: Export Data
 
 ## Overview
-This step adds the "review & export" stage that closes out the DASHR AI roadmap (capture → extraction → enrichment → scoring → **review/export**). Once a seller has scored their leads (step 10) and triaged the dashboard's Leads table, they need a way to get a qualified subset out of DASHR AI and into whatever CRM or spreadsheet workflow they already use — DASHR AI has no CRM integration yet, so "push to CRM" for v1 means a CSV download a rep can import anywhere. This feature adds a `POST /cards/export` endpoint that turns a seller-picked selection of cards (reusing the existing bulk-select UI from step 09) into a CSV file with one row per lead — contact fields, company firmographics, and lead score together — and an "Export CSV" action on the dashboard next to the existing "Score Selected" button.
+This step adds the "review & export" stage that closes out the DASHR AI roadmap (capture → extraction → enrichment → scoring → **review/export**). Once a seller has scored their leads (step 10) and triaged their batch on the `/upload` page's card list, they need a way to get a qualified subset out of DASHR AI and into whatever CRM or spreadsheet workflow they already use — DASHR AI has no CRM integration yet, so "push to CRM" for v1 means a CSV download a rep can import anywhere. This feature adds a `POST /cards/export` endpoint that turns a seller-picked selection of cards (reusing the existing bulk-select UI from step 09) into a CSV file with one row per lead — contact fields, company firmographics, and lead score together — and an "Export" action on the `/upload` page next to the existing Parse/Enrich/Score/Delete bulk actions. The export CTA lives on `/upload`, not the `/dashboard` Leads page — a seller reviewing a just-processed batch triages and exports it right there, without navigating away.
 
 ## Depends on
 - **04 — Visiting card bulk upload**: cards must exist (`visiting_cards`).
 - **05 — Parsing visiting card**: export reads `full_name`, `job_title`, `website`, `address`, `products_offered`, `gst_number`, `designation_level`, `special_remark`, and linked `CardEmail`/`CardPhone` rows populated by extraction.
 - **07 — Data enrichment**: export reads `Company` (`name`, `industry`) and `CompanySignals` (`linkedin_employee_count`, `estimated_revenue_band`) when present; enrichment is **not required** — a card with no linked company, or an unenriched company, still exports with those columns blank.
-- **09 — Bulk select/parse/enrich**: export reuses the dashboard's existing `useCardSelection` checkbox UI exactly as "Score Selected" does — no new selection mechanism.
+- **09 — Bulk select/parse/enrich**: export reuses the `/upload` page's existing `useCardSelection` checkbox UI exactly as its Parse/Enrich/Score/Delete buttons do — no new selection mechanism.
 - **10 — Lead scoring**: export includes `lead_score`; a card with `lead_score == null` (never scored) still exports with that column blank.
 
 Step 08 (delete card) is unrelated and not required.
@@ -20,7 +20,8 @@ No other endpoints change.
 
 ## Frontend surface (apps/web)
 
-- **Modified: `apps/web/app/dashboard/page.tsx`** — add an "Export CSV" button next to the existing "Score Selected" button, enabled whenever `selectedCardIds.size > 0` (no status restriction — unlike scoring, export has no eligibility filter; any selected card, scored or not, enriched or not, can be exported). Calls `exportCards([...selectedCardIds])`, which triggers a browser file download directly (no dashboard state changes afterward — selection is left as-is, unlike `handleScoreCards`, since exporting doesn't mutate any card).
+- **Modified: `apps/web/app/upload/page.tsx`** — add an "Export" button to the bulk-action row (alongside Parse/Enrich/Score/Delete), enabled whenever `selectedCardIds.size > 0` (no status restriction — unlike Parse/Enrich/Score, export has no eligibility filter; any selected card, scored or not, enriched or not, can be exported). Calls `exportCards([...selectedCardIds])`, which triggers a browser file download directly (no page state changes afterward — selection is left as-is, unlike the Parse/Enrich/Score handlers, since exporting doesn't mutate any card or its status). Grouped in its own bordered section after Delete, with its own `isExporting`/`exportError` state and error banner, following the same pattern as the page's other bulk actions.
+- **Not modified: `apps/web/app/dashboard/page.tsx`** — the Leads page keeps only its existing "Score" action; it does not get an export CTA. (An earlier pass of this spec built export here; it has since been relocated to `/upload`.)
 - **Modified: `apps/web/lib/api.ts`** — add `exportCards(cardIds: string[]): Promise<void>`. Not routed through the generic `request()` helper (that assumes a JSON response) — mirrors `deleteCard`'s existing pattern of a dedicated raw `fetch` call for a response shape the generic helper doesn't cover. Reads the response as a `Blob`, creates an object URL, and triggers a download via a temporary anchor element's `.click()`, then revokes the object URL. On a non-2xx response, parses the JSON error body and throws `ApiError`, same as every other client function.
 
 No new pages or components.
@@ -36,7 +37,7 @@ No background job changes. Export is synchronous in the request handler — deli
 - `apps/api/app/schemas/cards.py` — add `CardExportRequest`
 - `apps/api/app/services/card_service.py` — add `export_cards(db, current_user, card_ids) -> list[dict]`, querying visible cards (LEFT JOIN `Company`, `CompanySignals`, `Exhibition`; separate queries for each card's `CardEmail`/`CardPhone` rows, mirroring `get_card_detail`'s existing pattern) and assembling one row dict per card, silently skipping ids that aren't visible
 - `apps/web/lib/api.ts` — add `exportCards(cardIds: string[]): Promise<void>`
-- `apps/web/app/dashboard/page.tsx` — add "Export CSV" button wired to the existing selection state
+- `apps/web/app/upload/page.tsx` — add "Export" button wired to the existing selection state
 
 ## Files to create
 - `apps/api/app/services/export_service.py` — `build_csv(rows: list[dict]) -> str`, a pure function (no DB, no session — mirrors `scoring.py`'s separation of pure computation from the DB-touching service/router layer) that takes the row dicts assembled by `card_service.export_cards` and writes them via the stdlib `csv` module into a `io.StringIO`, returning the resulting text. Column order and headers defined as a module-level constant list, not inline, so a future column addition is a one-line change. v1 columns: `Full Name, Job Title, Company, Industry, Employee Count, Revenue Band, Primary Email, All Emails, Primary Phone, All Phones, Website, Address, GST Number, Products Offered, Designation Level, Lead Score, Special Remark, Exhibition, Status, Scanned On`. `All Emails`/`All Phones` are `; `-joined (a card can have more than one, per `CardEmail`/`CardPhone`); `Primary Email`/`Primary Phone` are the `is_primary` row, or the first row if none is flagged primary, or blank if none exist.
@@ -61,5 +62,5 @@ No new dependencies — CSV formatting uses Python's stdlib `csv` module.
 - [ ] A card with two emails (one `is_primary`) exports the primary one under `Primary Email` and both under `All Emails`, `; `-joined
 - [ ] A `card_ids` list containing an id not visible to the current user (wrong owner, different org) is silently omitted from the CSV — the response is still `200`, not `404`/`403`, and contains rows only for the visible ids
 - [ ] A `card_ids` list where none of the ids are visible to the current user returns `200` with a header-only CSV (no rows), not an error
-- [ ] `apps/web/app/dashboard/page.tsx`'s "Export CSV" button is disabled with no selection, enabled with any selection regardless of card status/score, and triggers a real file download in the browser when clicked
+- [ ] `apps/web/app/upload/page.tsx`'s "Export" button is disabled with no selection, enabled with any selection regardless of card status/score, and triggers a real file download in the browser when clicked
 - [ ] No query against `visiting_cards` in the new code paths omits the `scope_to_visible_users` scoping

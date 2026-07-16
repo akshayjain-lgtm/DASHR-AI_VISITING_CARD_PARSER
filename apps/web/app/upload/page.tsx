@@ -11,6 +11,7 @@ import {
   createExhibition,
   enrichCompanies,
   enrichCompany,
+  exportCards,
   getArchiveUpload,
   getWallet,
   listCards,
@@ -83,6 +84,9 @@ export default function UploadPage() {
   // shrinks as each card finishes rather than tracking a fixed batch size.
   const [bulkScoreTargetIds, setBulkScoreTargetIds] = useState<Set<string> | null>(null);
   const [bulkScoreTotal, setBulkScoreTotal] = useState<number | null>(null);
+
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const [wallet, setWallet] = useState<WalletOut | null>(null);
 
@@ -492,6 +496,21 @@ export default function UploadPage() {
     }
   }
 
+  // No eligibility filter, unlike Parse/Enrich/Score — any selected card,
+  // regardless of status/score, can be exported. Doesn't mutate any card, so
+  // selection and the card list are left as-is afterward.
+  async function handleExportCards() {
+    setIsExporting(true);
+    setExportError(null);
+    try {
+      await exportCards([...selectedCardIds]);
+    } catch (err) {
+      setExportError(err instanceof ApiError ? err.message : "Failed to export cards");
+    } finally {
+      setIsExporting(false);
+    }
+  }
+
   const {
     state: deleteState,
     isDeleting,
@@ -778,6 +797,15 @@ export default function UploadPage() {
                     {isBulkDeleting ? "Deleting…" : `Delete (${selectedCardIds.size})`}
                   </DBtn>
                 </div>
+                <div className="flex items-center gap-2 border-l border-black/10 pl-3">
+                  <GBtn
+                    onClick={handleExportCards}
+                    disabled={isExporting || selectedCardIds.size === 0}
+                    className="text-xs"
+                  >
+                    {isExporting ? "Exporting…" : `Export (${selectedCardIds.size})`}
+                  </GBtn>
+                </div>
               </div>
             )}
           </div>
@@ -828,6 +856,13 @@ export default function UploadPage() {
             <div className="mb-3 border border-red-200 bg-red-50 px-4 py-3 flex items-start gap-2 text-sm text-red-700">
               <AlertCircle size={15} className="shrink-0 mt-0.5" />
               {bulkDeleteError}
+            </div>
+          )}
+
+          {exportError && (
+            <div className="mb-3 border border-red-200 bg-red-50 px-4 py-3 flex items-start gap-2 text-sm text-red-700">
+              <AlertCircle size={15} className="shrink-0 mt-0.5" />
+              {exportError}
             </div>
           )}
 

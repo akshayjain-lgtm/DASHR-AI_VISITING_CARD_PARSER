@@ -7,8 +7,7 @@ import { Sidebar } from "@/components/sidebar";
 import { OBtn } from "@/components/buttons";
 import { CardDetailDrawer } from "@/components/card-detail-drawer";
 import { getCurrentUser } from "@/lib/auth";
-import { ApiError, exportCards, listCards, type CardOut, type UserOut } from "@/lib/api";
-import { useCardSelection } from "@/lib/use-card-selection";
+import { listCards, type CardOut, type UserOut } from "@/lib/api";
 
 function ScoreBadge({ score }: { score: number }) {
   if (score >= 80)
@@ -44,11 +43,6 @@ export default function Dashboard() {
   const [user, setUser] = useState<UserOut | null>(null);
   const [cards, setCards] = useState<CardOut[]>([]);
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
-  const [isExporting, setIsExporting] = useState(false);
-  const [exportError, setExportError] = useState<string | null>(null);
-
-  const { selectedCardIds, allSelected, toggleSelectAll, toggleCardSelected } =
-    useCardSelection(cards);
 
   useEffect(() => {
     getCurrentUser().then(setUser);
@@ -70,18 +64,6 @@ export default function Dashboard() {
 
   const highCount = cards.filter((c) => c.lead_score != null && c.lead_score >= 80).length;
   const lowCount = cards.filter((c) => c.lead_score != null && c.lead_score < 60).length;
-
-  async function handleExportCards() {
-    setIsExporting(true);
-    setExportError(null);
-    try {
-      await exportCards([...selectedCardIds]);
-    } catch (err) {
-      setExportError(err instanceof ApiError ? err.message : "Failed to export cards");
-    } finally {
-      setIsExporting(false);
-    }
-  }
 
   return (
     <div className="min-h-screen bg-white flex">
@@ -140,32 +122,11 @@ export default function Dashboard() {
               <Filter size={12} /> Filter
             </button>
             <div className="flex-1" />
-            {cards.length > 0 && (
-              <OBtn
-                onClick={handleExportCards}
-                disabled={isExporting || selectedCardIds.size === 0}
-                className="text-xs"
-              >
-                {isExporting ? "Exporting…" : `Export CSV (${selectedCardIds.size})`}
-              </OBtn>
-            )}
           </div>
-
-          {exportError && (
-            <div className="border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-              {exportError}
-            </div>
-          )}
 
           {/* Table */}
           <div className="border border-black/10 overflow-hidden">
-            <div className="grid grid-cols-[auto_1fr_1fr_1fr_1fr] gap-4 bg-[#fafafa] border-b border-black/8 px-5 py-3 text-[11px] font-black uppercase tracking-wider text-black/35 items-center">
-              <input
-                type="checkbox"
-                checked={allSelected}
-                onChange={toggleSelectAll}
-                aria-label="Select all cards"
-              />
+            <div className="grid grid-cols-[1fr_1fr_1fr_1fr] gap-4 bg-[#fafafa] border-b border-black/8 px-5 py-3 text-[11px] font-black uppercase tracking-wider text-black/35 items-center">
               <span>Name</span>
               <span>Company</span>
               <span>Designation</span>
@@ -175,15 +136,8 @@ export default function Dashboard() {
               <div
                 key={card.card_id}
                 onClick={() => setSelectedCardId(card.card_id)}
-                className="grid grid-cols-[auto_1fr_1fr_1fr_1fr] gap-4 px-5 py-4 border-b border-black/5 text-sm hover:bg-[#E65527]/2 transition-colors cursor-pointer items-center"
+                className="grid grid-cols-[1fr_1fr_1fr_1fr] gap-4 px-5 py-4 border-b border-black/5 text-sm hover:bg-[#E65527]/2 transition-colors cursor-pointer items-center"
               >
-                <input
-                  type="checkbox"
-                  checked={selectedCardIds.has(card.card_id)}
-                  onClick={(e) => e.stopPropagation()}
-                  onChange={() => toggleCardSelected(card.card_id)}
-                  aria-label={`Select ${card.full_name ?? "card"}`}
-                />
                 <span className="font-semibold">{card.full_name ?? "Unnamed contact"}</span>
                 <span className="text-black/55">{card.company_name ?? "—"}</span>
                 <span className="text-black/50">{card.job_title ?? "—"}</span>
