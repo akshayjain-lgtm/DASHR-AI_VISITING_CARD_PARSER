@@ -28,9 +28,12 @@ implementation of `app.routers.cards`/`app.services.card_service`/
   Count`/`Revenue Band` blank, not an error or a null-ish string.
 - A card with `lead_score IS NULL` (never scored) exports `Lead Score`
   blank, not `0`.
-- The export button/endpoint has no status/score/enrichment eligibility
-  filter (unlike scoring's "must be extracted" gate) — any visible card can
-  be exported regardless of its current `status`.
+- The export button/endpoint has no score/enrichment eligibility filter
+  (unlike scoring's "must be extracted" gate) — any visible card can be
+  exported regardless of its `lead_score`/enrichment state. Status is the
+  one exception: a visible card whose `status` is `failed`, `duplicate`,
+  `processing`, or `merged` is silently skipped, the same as an invisible
+  id — no row, no error. Only `new` and `extracted` cards ever get a row.
 - `POST /cards/export` is explicitly documented as read-only: it must never
   mutate `status`, `lead_score`, or any other card field.
 
@@ -84,6 +87,7 @@ import io
 import re
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app as fastapi_app
@@ -544,3 +548,121 @@ def test_export_never_mutates_card_status_or_lead_score_and_has_no_status_filter
     card = db_session.get(VisitingCard, card_id)
     assert card.status == "new", "POST /cards/export must never mutate VisitingCard.status"
     assert card.lead_score is None, "POST /cards/export must never mutate VisitingCard.lead_score"
+
+
+# ==========================================================================
+# 10. Status exclusion — a visible card whose status is failed/duplicate/
+#     processing/merged is silently skipped, exactly the same as an
+#     invisible id: no row, no error, still 200. Only "new" and "extracted"
+#     ever produce a row (spec's "Status exclusion" section + DoD items).
+# ==========================================================================
+
+
+@pytest.mark.parametrize(
+    "excluded_status",
+    ["failed", "duplicate", "processing", "merged"],
+)
+def test_export_omits_visible_card_with_excluded_status(
+    client, fake_otp_provider, db_session, excluded_status
+):
+    user = _authenticated_user(client, fake_otp_provider)
+    card_id = _make_card(
+        db_session,
+        user_id=uuid.UUID(user["user_id"]),
+        full_name="Excluded Status Contact",
+        status=excluded_status,
+    )
+
+    resp = client.post("/cards/export", json={"card_ids": [str(card_id)]})
+
+    _assert_valid_csv_response_headers(resp)
+    rows = _parse_csv_rows(resp.text)
+    assert rows == [], (
+        f"a visible card with status={excluded_status!r} must be silently omitted from the CSV "
+        f"(no row, still 200, no error), got {rows!r}"
+    )
+
+
+def test_export_with_all_cards_excluded_status_returns_200_header_only_csv(
+    client, fake_otp_provider, db_session
+):
+    """DoD: 'A card_ids selection made up entirely of excluded-status
+    (failed/duplicate/processing/merged) cards returns 200 with a
+    header-only CSV, same as an all-invisible selection.'"""
+    user = _authenticated_user(client, fake_otp_provider)
+    user_id = uuid.UUID(user["user_id"])
+    card_ids = [
+        _make_card(db_session, user_id=user_id, full_name="Failed Contact", status="failed"),
+        _make_card(db_session, user_id=user_id, full_name="Duplicate Contact", status="duplicate"),
+        _make_card(db_session, user_id=user_id, full_name="Processing Contact", status="processing"),
+        _make_card(db_session, user_id=user_id, full_name="Merged Contact", status="merged"),
+    ]
+
+    resp = client.post("/cards/export", json={"card_ids": [str(cid) for cid in card_ids]})
+
+    _assert_valid_csv_response_headers(resp)
+    rows = _parse_csv_rows(resp.text)
+    assert rows == [], (
+        "a selection made entirely of excluded-status cards must return 200 with a header-only "
+        f"CSV (no data rows) and no error, got {rows!r}"
+    )
+
+
+def test_export_mixed_selection_skips_excluded_status_rows_and_keeps_remaining_in_requested_order(
+    client, fake_otp_provider, db_session
+):
+    """A selection mixing excluded-status cards with new/extracted cards
+    must export only the new/extracted rows, in the order the caller
+    requested the ids (minus the skipped ones) — the same "silently drop,
+    don't reorder what's left" behavior already exercised for an invisible
+    foreign id in section 4's test."""
+    user = _authenticated_user(client, fake_otp_provider)
+    user_id = uuid.UUID(user["user_id"])
+
+    new_id = _make_card(db_session, user_id=user_id, full_name="New Contact", status="new")
+    failed_id = _make_card(db_session, user_id=user_id, full_name="Failed Contact", status="failed")
+    extracted_id = _make_card(
+        db_session, user_id=user_id, full_name="Extracted Contact", status="extracted"
+    )
+    duplicate_id = _make_card(
+        db_session, user_id=user_id, full_name="Duplicate Contact", status="duplicate"
+    )
+    processing_id = _make_card(
+        db_session, user_id=user_id, full_name="Processing Contact", status="processing"
+    )
+    merged_id = _make_card(db_session, user_id=user_id, full_name="Merged Contact", status="merged")
+
+    requested_order = [new_id, failed_id, extracted_id, duplicate_id, processing_id, merged_id]
+    resp = client.post("/cards/export", json={"card_ids": [str(cid) for cid in requested_order]})
+
+    _assert_valid_csv_response_headers(resp)
+    rows = _parse_csv_rows(resp.text)
+    names = [row["Full Name"] for row in rows]
+    assert names == ["New Contact", "Extracted Contact"], (
+        "a mixed selection must contain only the new/extracted rows, in the caller's requested "
+        f"order with the excluded-status ids simply missing (not reordered), got {names!r}"
+    )
+
+
+def test_export_new_and_extracted_statuses_both_still_export_rows(
+    client, fake_otp_provider, db_session
+):
+    """Regression guard: the exclusion is scoped to failed/duplicate/
+    processing/merged only — 'new' and 'extracted' must keep exporting
+    normally, requested together in one call so the exclusion filter can't
+    be over-matching either of them."""
+    user = _authenticated_user(client, fake_otp_provider)
+    user_id = uuid.UUID(user["user_id"])
+    new_id = _make_card(db_session, user_id=user_id, full_name="New Status Contact", status="new")
+    extracted_id = _make_card(
+        db_session, user_id=user_id, full_name="Extracted Status Contact", status="extracted"
+    )
+
+    resp = client.post("/cards/export", json={"card_ids": [str(new_id), str(extracted_id)]})
+
+    _assert_valid_csv_response_headers(resp)
+    rows = _parse_csv_rows(resp.text)
+    names = {row["Full Name"] for row in rows}
+    assert names == {"New Status Contact", "Extracted Status Contact"}, (
+        f"both 'new' and 'extracted' status cards must still export a row, got {names!r}"
+    )
