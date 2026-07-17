@@ -539,3 +539,37 @@ export function listCards(
   const qs = query.toString();
   return request(`/cards${qs ? `?${qs}` : ""}`);
 }
+
+export type LeadVolumePoint = { date: string; count: number };
+export type IndustryMixPoint = { industry: string; count: number };
+export type ScoreDistribution = { high: number; medium: number; low: number; unscored: number };
+export type ExhibitionPerformance = {
+  exhibition_id: string;
+  exhibition_name: string | null;
+  lead_count: number;
+  // avg_score intentionally removed for the time being, until scoring
+  // itself is revisited — see .claude/specs/16-dashboard-analytics.md
+};
+// Raw VisitingCard.designation_level value, or "Unclassified" for null —
+// no display-label mapping exists server-side, so the chart component maps it.
+export type RoleMixPoint = { role: string; count: number };
+export type RegionMixPoint = { region: string; count: number };
+export type DashboardAnalyticsOut = {
+  lead_volume: LeadVolumePoint[];
+  industry_mix: IndustryMixPoint[];
+  score_distribution: ScoreDistribution;
+  exhibition_performance: ExhibitionPerformance[];
+  role_mix: RoleMixPoint[];
+  region_mix: RegionMixPoint[];
+};
+
+export function getDashboardAnalytics(
+  params: { exhibitionIds?: string[]; startDate?: string; endDate?: string } = {}
+): Promise<DashboardAnalyticsOut> {
+  const query = new URLSearchParams();
+  for (const id of params.exhibitionIds ?? []) query.append("exhibition_ids", id);
+  if (params.startDate) query.set("start_date", params.startDate);
+  if (params.endDate) query.set("end_date", params.endDate);
+  const qs = query.toString();
+  return request(`/analytics/dashboard${qs ? `?${qs}` : ""}`);
+}

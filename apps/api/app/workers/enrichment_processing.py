@@ -8,6 +8,7 @@ from app.db.session import SessionLocal
 from app.models.company import Company
 from app.models.visiting_card import VisitingCard
 from app.services import billing, enrichment_service, enrichment_summary
+from app.services.industry_classification import classify_industry, fetch_website_text
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -60,11 +61,13 @@ def enrich_company_task(
 
         gst_number = None
         refund_user_id = None
+        products_offered = None
         if source_card_id is not None:
             source_card = db.get(VisitingCard, uuid.UUID(source_card_id))
             if source_card is not None:
                 gst_number = source_card.gst_number
                 refund_user_id = source_card.user_id
+                products_offered = source_card.products_offered
 
         is_retry = self.request.retries > 0
         if not is_retry:
@@ -120,6 +123,22 @@ def enrich_company_task(
                         company_id,
                     )
             return
+
+        if company.industry is None:
+            # Never re-classify an already-classified company — same
+            # caching principle as the rest of enrichment. Classification
+            # failures (a dead/unreachable website, no keyword match
+            # anywhere) must never fail this task — fetch_website_text
+            # and classify_industry are both already fail-safe (never
+            # raise), so no extra try/except is needed here.
+            website_text = fetch_website_text(company.website) if company.website else None
+            industry = classify_industry(
+                products_offered=products_offered,
+                website_text=website_text,
+                company_name=company.name,
+            )
+            if industry is not None:
+                company.industry = industry
 
         company.summary = summary
         company.summary_generated_at = datetime.now(timezone.utc)

@@ -9,11 +9,13 @@ Core workflows:
 2. **Extraction** — AI vision parses each card image into structured fields (name, title, company, email, phone, address)
 3. **Enrichment** — cross-reference extracted company names against public data sources to attach firmographics (industry/NAICS code, employee count, revenue band, location)
 4. **Scoring** — rank each lead against a configurable industrial/manufacturing product-fit model
-5. **Review & export** — sales reps triage a scored lead list per exhibition on an analytics dashboard and push qualified leads to CRM
+5. **Review & export** — sales reps triage a scored lead list per exhibition and push qualified leads to CRM
 6. **Billing** — sellers recharge their prepaid INR wallet via Razorpay, and each recharge generates an invoice (service name "Visiting Card Recharge and Scoring") viewable in their account
 7. **Wallet usage** — every parse/enrich/score action debits the acting user's own wallet, after each user's first 20 free actions per action type (parse/enrich/score) are used up; once free allowance is exhausted, no parse/enrich/score action is allowed to run at a 0 wallet balance; once free allowance is exhausted, no parse/enrich/score action is allowed to run at a 0 wallet balance
+8. **Analytics dashboard** — a filterable visual summary layer (lead volume, industry mix, score distribution, exhibition performance, role mix, region mix) so sellers get at-a-glance triage across exhibitions; row-by-row lead review happens on the Upload page, not here
 
-This is a greenfield repo — no application code exists yet. This file defines the target architecture new work should scaffold toward, not a description of code that already exists. Treat structural claims below as the plan, not as verified fact, until the corresponding code lands.
+This is a greenfield repo — no application code exists yet. This file define
+s the target architecture new work should scaffold toward, not a description of code that already exists. Treat structural claims below as the plan, not as verified fact, until the corresponding code lands.
 
 ---
 
@@ -92,7 +94,7 @@ dashr-ai/
 
 ## Dashboard & marketing pages
 
-- What was the "leads page" is the **Dashboard** page: a scored/filterable lead table plus an analytics layer above it (charts/graphs on lead volume, industry mix, score distribution, exhibition performance, etc.) — treat table and analytics as one page, not two separate features
+- What was the "leads page" is the **Dashboard** page: a pure analytics surface — a stat band (total/high-fit/low-fit leads) at the top, a filter bar (exhibition + time range) scoping every chart identically, and charts on lead volume, industry mix, score distribution, exhibition performance, role mix, and region mix below. Row-by-row lead review/drill-down lives on `/upload`, not `/dashboard` — the two pages don't duplicate that surface
 - The homepage carries public **Privacy Policy** and **Terms of Use** sections/pages — static content, no auth, served from `apps/web/app/(marketing)/`
 - The **profile page** collects each User's GST No. and Billing Address as optional fields on their `SellerProfile` row (in addition to the standard company/product fields) — captured per-User (via the 1:1 `SellerProfile`), not a single org-wide setting, since billing is per-user. Neither is mandatory, at profile-save time or for Invoice generation — an Invoice is issued whether or not either is populated, carrying whatever value (including blank) the `SellerProfile` row holds at issue time
 

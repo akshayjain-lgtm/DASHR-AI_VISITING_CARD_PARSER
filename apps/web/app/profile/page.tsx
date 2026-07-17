@@ -110,7 +110,7 @@ export default function ProfilePage() {
   };
 
   return (
-    <div className="min-h-screen bg-white flex">
+    <div className="min-h-screen bg-white flex flex-col sm:flex-row">
       <Sidebar active="profile" />
       <main className="flex-1 p-10 max-w-2xl">
         <div className="mb-8">

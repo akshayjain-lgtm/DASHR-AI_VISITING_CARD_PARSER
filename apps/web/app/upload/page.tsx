@@ -535,7 +535,7 @@ export default function UploadPage() {
   const bulkDeleteConfirm = bulkDeleteConfirmCopy(bulkDeleteState);
 
   return (
-    <div className="min-h-screen bg-white flex">
+    <div className="min-h-screen bg-white flex flex-col sm:flex-row">
       <Sidebar active="upload" />
       <main className="flex-1 p-10 max-w-3xl">
         <div className="mb-8">

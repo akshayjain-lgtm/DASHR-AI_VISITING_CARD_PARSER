@@ -1,3 +1,4 @@
+
 # Spec: Bulk Select, Parse, and Enrich
 
 ## Overview

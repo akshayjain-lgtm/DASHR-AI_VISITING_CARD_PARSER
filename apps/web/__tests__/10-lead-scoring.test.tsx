@@ -1,9 +1,5 @@
 // Tests for the 10-lead-scoring feature's frontend surface, per
 // .claude/specs/10-lead-scoring.md:
-//   - the dashboard "Leads" table rendering real lead_score via ScoreBadge
-//     (HIGH/MED/LOW buckets) or an "UNSCORED" badge when lead_score is null
-//     — this page has NO scoring CTA at all (bulk or per-row); scoring is
-//     only ever initiated from the upload page or the card detail drawer
 //   - CardDetailDrawer's one-shot "Score Card" CTA, disabled unless the
 //     card's status is "extracted", which re-fetches the card after scoring
 //     completes and is replaced by a locked-state message (no "Re-score
@@ -23,7 +19,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import Dashboard from "@/app/dashboard/page";
 import UploadPage from "@/app/upload/page";
 import { CardDetailDrawer } from "@/components/card-detail-drawer";
 import type { CardDetailOut, CardOut, ExhibitionOut, UserOut } from "@/lib/api";
@@ -45,37 +40,6 @@ const sampleUser: UserOut = {
   role: null,
   phone_verified: true,
 };
-
-const baseCardFields = {
-  user_id: "user-1",
-  exhibition_id: null,
-  original_filename: "card.jpg",
-  image_url: "https://example.com/card.jpg",
-  merged_into_card_id: null,
-  created_at: "2026-07-01T00:00:00Z",
-  company_id: null,
-  company_name: null,
-  company_enrichment_status: null,
-} as const;
-
-function makeCard(params: {
-  card_id: string;
-  full_name: string;
-  job_title?: string | null;
-  status: string;
-  lead_score: number | null;
-}): CardOut {
-  return {
-    ...baseCardFields,
-    card_id: params.card_id,
-    full_name: params.full_name,
-    job_title: params.job_title ?? "Manager",
-    status: params.status,
-    lead_score: params.lead_score,
-    score_breakdown: null,
-    scored_at: null,
-  };
-}
 
 const sampleCardDetail: CardDetailOut = {
   card_id: "card-1",
@@ -115,12 +79,9 @@ function jsonResponse(status: number, body: unknown): Response {
 }
 
 function createApiMock(opts: {
-  cards?: CardOut[];
   card?: CardDetailOut | null;
   cardAfterScore?: CardDetailOut | null;
 }) {
-  const cardsState = [...(opts.cards ?? [])];
-  const scoreCallsBulk: { card_ids: string[] }[] = [];
   const scoreCallsSingle: string[] = [];
   let cardDetailRequestCount = 0;
 
@@ -131,20 +92,11 @@ function createApiMock(opts: {
     if (method === "GET" && url === "/api/auth/me") {
       return jsonResponse(200, sampleUser);
     }
-    if (method === "GET" && /^\/api\/cards(\?.*)?$/.test(url)) {
-      return jsonResponse(200, cardsState);
-    }
-    if (method === "POST" && url === "/api/cards/score") {
-      const body = init?.body ? JSON.parse(String(init.body)) : {};
-      scoreCallsBulk.push(body);
-      return jsonResponse(200, { enqueued_count: (body.card_ids ?? []).length, skipped_count: 0 });
-    }
     const singleScoreMatch = url.match(/^\/api\/cards\/([^/?]+)\/score$/);
     if (method === "POST" && singleScoreMatch) {
       const cardId = singleScoreMatch[1];
       scoreCallsSingle.push(cardId);
-      const matched = cardsState.find((c) => c.card_id === cardId) ?? null;
-      return jsonResponse(200, matched ?? { card_id: cardId });
+      return jsonResponse(200, { card_id: cardId });
     }
     if (method === "GET" && /^\/api\/cards\/[^/?]+$/.test(url)) {
       cardDetailRequestCount += 1;
@@ -160,7 +112,7 @@ function createApiMock(opts: {
     throw new Error(`Unhandled fetch call in test: ${method} ${url}`);
   });
 
-  return { fetchMock, scoreCallsBulk, scoreCallsSingle };
+  return { fetchMock, scoreCallsSingle };
 }
 
 beforeEach(() => {
@@ -169,49 +121,6 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
-});
-
-// ======================================================================
-// Dashboard — real lead_score rendering + bulk "Score Selected"
-// ======================================================================
-
-describe("Dashboard leads table scoring", () => {
-  it("renders ScoreBadge buckets for HIGH/MED/LOW and an UNSCORED badge for a null lead_score", async () => {
-    const cards = [
-      makeCard({ card_id: "card-high", full_name: "High Fit Lead", status: "extracted", lead_score: 85 }),
-      makeCard({ card_id: "card-med", full_name: "Medium Fit Lead", status: "extracted", lead_score: 65 }),
-      makeCard({ card_id: "card-low", full_name: "Low Fit Lead", status: "extracted", lead_score: 40 }),
-      makeCard({ card_id: "card-unscored", full_name: "Unscored Lead", status: "extracted", lead_score: null }),
-    ];
-    const { fetchMock } = createApiMock({ cards });
-    vi.stubGlobal("fetch", fetchMock);
-
-    render(<Dashboard />);
-    await screen.findByText("High Fit Lead");
-
-    expect(screen.getByText("85% HIGH")).toBeInTheDocument();
-    expect(screen.getByText("65% MED")).toBeInTheDocument();
-    expect(screen.getByText("40% LOW")).toBeInTheDocument();
-    expect(screen.getByText("UNSCORED")).toBeInTheDocument();
-  });
-
-  it("never renders a scoring CTA — no bulk or per-card score action on this page", async () => {
-    const user = userEvent.setup();
-    const cards = [
-      makeCard({ card_id: "card-extracted", full_name: "Ready To Score", status: "extracted", lead_score: null }),
-    ];
-    const { fetchMock } = createApiMock({ cards });
-    vi.stubGlobal("fetch", fetchMock);
-
-    render(<Dashboard />);
-    await screen.findByText("Ready To Score");
-
-    await user.click(screen.getByRole("checkbox", { name: "Select all cards" }));
-
-    expect(screen.queryByRole("button", { name: /score/i })).not.toBeInTheDocument();
-    // Export CSV, the page's only bulk action, is unaffected by scoring's removal.
-    expect(screen.getByRole("button", { name: "Export CSV (1)" })).toBeInTheDocument();
-  });
 });
 
 // ======================================================================
