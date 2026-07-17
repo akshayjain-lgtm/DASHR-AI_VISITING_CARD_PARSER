@@ -8,6 +8,7 @@ import {
   Building2,
   Wallet,
   Settings,
+  HelpCircle,
   LogOut,
   Menu,
   X,
@@ -21,6 +22,7 @@ const NAV = [
   { id: "profile", label: "Company Profile", icon: Building2, path: "/profile" },
   { id: "wallet", label: "Wallet", icon: Wallet, path: "/wallet" },
   { id: "settings", label: "Settings", icon: Settings, path: "/settings" },
+  { id: "faq", label: "FAQ", icon: HelpCircle, path: "/faq" },
 ];
 
 // The logo header, nav list, and sign-out button — identical between the
