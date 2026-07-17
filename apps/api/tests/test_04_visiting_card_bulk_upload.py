@@ -380,14 +380,17 @@ def test_bulk_upload_valid_files_no_exhibition_creates_expected_rows(
     )
 
 
-def test_bulk_upload_enqueues_one_process_card_task_per_created_card(
+def test_bulk_upload_enqueues_no_process_card_tasks(
     client, fake_otp_provider, jpeg_bytes, monkeypatch
 ):
-    """Spec: 'enqueues a process_card Celery task per created card' /
-    Definition of Done: '...enqueues 3 process_card tasks'. Verified by
-    monkeypatching the task's `.delay` (never a live broker/Redis) and
-    counting/inspecting invocations — per the project's rule to test Celery
-    task interactions directly rather than requiring a running broker."""
+    """Amendment (post-05-parsing-visiting-card): bulk-upload no longer
+    auto-enqueues extraction. Definition of Done: '...enqueues zero
+    process_card tasks (extraction only starts via the explicit
+    POST /cards/process call)'. Verified by monkeypatching the task's
+    `.delay` (never a live broker/Redis) and asserting it is never called —
+    per the project's rule to test Celery task interactions directly rather
+    than requiring a running broker. Supersedes the pre-amendment
+    `test_bulk_upload_enqueues_one_process_card_task_per_created_card`."""
     _authenticated_user(client, fake_otp_provider)
 
     enqueued_card_ids: list[str] = []
@@ -400,13 +403,11 @@ def test_bulk_upload_enqueues_one_process_card_task_per_created_card(
     resp = _upload_files(client, files)
 
     assert resp.status_code == 201, resp.text
-    created_ids = {c["card_id"] for c in resp.json()["cards"]}
+    assert resp.json()["cards"], "batch upload must still create cards"
 
-    assert len(enqueued_card_ids) == 3, (
-        f"exactly one process_card task must be enqueued per created card, got {enqueued_card_ids!r}"
-    )
-    assert set(enqueued_card_ids) == created_ids, (
-        "each enqueued process_card task must reference the id of a card actually created"
+    assert enqueued_card_ids == [], (
+        "bulk-upload must not enqueue any process_card task — extraction only "
+        f"starts via the explicit POST /cards/process call, got {enqueued_card_ids!r}"
     )
 
 

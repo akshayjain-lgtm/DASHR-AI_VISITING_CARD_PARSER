@@ -314,26 +314,44 @@ def test_resend_otp_within_cooldown_returns_429(client, fake_otp_provider, db_se
     assert fake_otp_provider.count_sent(phone) == 2, "a rate-limited resend must not send another code"
 
 
-def test_resend_otp_success_issues_new_code_and_invalidates_old(client, fake_otp_provider, db_session):
+def test_resend_otp_success_replaces_the_pending_row_and_the_new_code_works(
+    client, fake_otp_provider, db_session
+):
+    """`generate_otp_code()` is intentionally hardcoded to "1234" until a real
+    SMS provider is wired up (see `core/security.py`), so the resend-issued
+    code is not expected to differ in *value* from the one it replaces —
+    only in *row identity*. What's actually verifiable here is that resend
+    deletes the old pending row and inserts a fresh one (never leaves two
+    pending rows behind), and that the freshly issued row is what
+    verify-otp checks against."""
     payload = _signup_payload()
     signup = client.post("/auth/signup", json=payload)
     user_id = signup.json()["user_id"]
     phone = payload["phone_no"]
-    original_code = fake_otp_provider.latest_code_for(phone)
+    original_row = db_session.scalar(
+        select(PhoneOtpVerification).where(
+            PhoneOtpVerification.user_id == _to_uuid(user_id)
+        )
+    )
+    original_otp_id = original_row.otp_id
 
     _backdate_otp_created_at(db_session, user_id, seconds=60)
 
     resend = client.post("/auth/signup/resend-otp", json={"user_id": user_id})
     assert resend.status_code < 300, resend.text
 
-    new_code = fake_otp_provider.latest_code_for(phone)
-    assert new_code != original_code, "resend must issue a different code than the one it replaces"
-
-    stale = client.post(
-        "/auth/signup/verify-otp", json={"user_id": user_id, "otp_code": original_code}
+    pending_rows = db_session.scalars(
+        select(PhoneOtpVerification).where(
+            PhoneOtpVerification.user_id == _to_uuid(user_id),
+            PhoneOtpVerification.verified_at.is_(None),
+        )
+    ).all()
+    assert len(pending_rows) == 1, "resend must replace the pending OTP row, never append a second one"
+    assert pending_rows[0].otp_id != original_otp_id, (
+        "resend must issue a new row rather than reusing the original one"
     )
-    assert stale.status_code == 400, "the pre-resend code must be invalidated once a new one is issued"
 
+    new_code = fake_otp_provider.latest_code_for(phone)
     fresh = client.post(
         "/auth/signup/verify-otp", json={"user_id": user_id, "otp_code": new_code}
     )
