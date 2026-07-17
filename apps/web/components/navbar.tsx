@@ -18,6 +18,12 @@ export function Navbar() {
           >
             Product
           </button>
+          <button
+            onClick={() => router.push("/faq")}
+            className="text-sm font-semibold text-black/60 hover:text-black transition-colors"
+          >
+            FAQ
+          </button>
           <button className="text-sm font-semibold text-black/60 hover:text-black transition-colors">
             Pricing
           </button>

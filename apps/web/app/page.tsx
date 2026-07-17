@@ -16,6 +16,7 @@ import { Navbar } from "@/components/navbar";
 import { DashrLogo } from "@/components/dashr-logo";
 import { HeroViz } from "@/components/hero-viz";
 import { OBtn, GBtn } from "@/components/buttons";
+import { CtaBanner } from "@/components/cta-banner";
 
 const STEPS = [
   {
@@ -176,22 +177,12 @@ export default function HomePage() {
       </section>
 
       {/* CTA Banner */}
-      <section className="bg-[#E65527] py-16">
-        <div className="max-w-6xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-6">
-          <div>
-            <h2 className="text-2xl font-black text-white mb-1">See it in action</h2>
-            <p className="text-white/65 text-sm">
-              No signup required for the demo. Load a sample batch in 30 seconds.
-            </p>
-          </div>
-          <button
-            onClick={() => router.push("/product")}
-            className="bg-white text-[#E65527] px-7 py-3 font-black text-sm hover:bg-white/90 transition-colors whitespace-nowrap inline-flex items-center gap-2"
-          >
-            Try Demo <ArrowRight size={14} />
-          </button>
-        </div>
-      </section>
+      <CtaBanner
+        heading="See it in action"
+        subcopy="No signup required for the demo. Load a sample batch in 30 seconds."
+        ctaLabel="Try Demo"
+        onCtaClick={() => router.push("/product")}
+      />
 
       {/* Footer */}
       <footer className="border-t border-black/10 bg-white py-10">
@@ -203,6 +194,12 @@ export default function HomePage() {
               className="hover:text-black transition-colors"
             >
               Product
+            </button>
+            <button
+              onClick={() => router.push("/faq")}
+              className="hover:text-black transition-colors"
+            >
+              FAQ
             </button>
             <span className="hover:text-black transition-colors cursor-pointer">
               Pricing
