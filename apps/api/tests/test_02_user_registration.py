@@ -17,8 +17,12 @@ against the implementation:
   time.sleep()" rule.
 - A verified phone number is unique across accounts (partial unique index on
   `users.phone_no WHERE phone_verified = true`); unverified accounts may
-  share a phone number in-flight, but a second account's *verification* of an
-  already-verified number must fail cleanly with `409`, never a raw 500.
+  share a phone number in-flight. Since 17-admin-user-management, signup
+  itself rejects a phone number already verified on another account with a
+  `409` before creating a user row or sending an OTP — the older contract
+  (only *verification* enforcing this) still holds for the genuine race
+  where both accounts sign up before either verifies; that case still fails
+  cleanly with `409` at verify-otp time, never a raw 500.
 - Users created here always have `org_id = NULL, role = NULL` — org
   creation/invites are out of scope for this feature, so there is no
   tenant-isolation test in this file; instead we assert org_id/role are None.
@@ -364,7 +368,15 @@ def test_resend_otp_success_replaces_the_pending_row_and_the_new_code_works(
 # --------------------------------------------------------------------------
 
 
-def test_verify_otp_cross_account_phone_reuse_fails_cleanly_not_500(client, fake_otp_provider, db_session):
+def test_signup_with_already_verified_phone_returns_409_and_sends_no_otp(
+    client, fake_otp_provider, db_session
+):
+    """Since 17-admin-user-management: a phone number already verified on
+    another account is rejected at signup time — before a second user row
+    is ever created or a second OTP ever sent — rather than only surfacing
+    at verify-otp time. This is the common (non-racing) case; the genuine
+    race where both accounts sign up before either verifies is covered
+    separately below, since signup itself can't reject that one."""
     shared_phone = _unique_phone()
 
     signup_a = client.post(
@@ -380,9 +392,44 @@ def test_verify_otp_cross_account_phone_reuse_fails_cleanly_not_500(client, fake
     assert verify_a.status_code == 200, verify_a.text
     assert verify_a.json()["phone_verified"] is True
 
-    # A second account signs up with the SAME (now-verified-on-A) phone
-    # number. Per spec, unverified accounts may still share a phone number
-    # in-flight — only *verification* enforces the partial-unique constraint.
+    sent_before = fake_otp_provider.count_sent(shared_phone)
+
+    signup_b = client.post(
+        "/auth/signup", json=_signup_payload(phone_no=shared_phone, name="Account B")
+    )
+
+    assert signup_b.status_code == 409, (
+        f"signup with an already-verified phone number must fail immediately, "
+        f"got {signup_b.status_code}: {signup_b.text}"
+    )
+    assert "detail" in signup_b.json()
+    assert fake_otp_provider.count_sent(shared_phone) == sent_before, (
+        "no OTP should ever be sent for a signup rejected before account creation"
+    )
+
+    rows = db_session.execute(select(User).where(User.phone_no == shared_phone)).scalars().all()
+    assert len(rows) == 1, "no second user row should exist for the rejected signup"
+    assert str(rows[0].user_id) == user_a_id
+
+
+def test_verify_otp_cross_account_phone_reuse_race_fails_cleanly_not_500(
+    client, fake_otp_provider, db_session
+):
+    """The genuine race: both accounts sign up while the phone is still
+    unverified (allowed in-flight, per spec — signup's early check can't
+    catch this since neither is verified yet). Whichever verifies second
+    must fail cleanly with 409, and — since the phone conflict is checked
+    before verify_otp() marks the code used — the loser's own OTP must
+    survive unconsumed rather than being burned on a doomed attempt."""
+    shared_phone = _unique_phone()
+
+    signup_a = client.post(
+        "/auth/signup", json=_signup_payload(phone_no=shared_phone, name="Account A")
+    )
+    assert signup_a.status_code == 201, signup_a.text
+    user_a_id = signup_a.json()["user_id"]
+    code_a = fake_otp_provider.latest_code_for(shared_phone)
+
     signup_b = client.post(
         "/auth/signup", json=_signup_payload(phone_no=shared_phone, name="Account B")
     )
@@ -391,6 +438,11 @@ def test_verify_otp_cross_account_phone_reuse_fails_cleanly_not_500(client, fake
     )
     user_b_id = signup_b.json()["user_id"]
     code_b = fake_otp_provider.latest_code_for(shared_phone)
+
+    verify_a = client.post(
+        "/auth/signup/verify-otp", json={"user_id": user_a_id, "otp_code": code_a}
+    )
+    assert verify_a.status_code == 200, verify_a.text
 
     verify_b = client.post(
         "/auth/signup/verify-otp", json={"user_id": user_b_id, "otp_code": code_b}
@@ -415,6 +467,15 @@ def test_verify_otp_cross_account_phone_reuse_fails_cleanly_not_500(client, fake
         select(User).where(User.user_id == _to_uuid(user_b_id))
     ).scalar_one()
     assert user_b_row.phone_verified is False
+
+    # B's own OTP must not have been consumed by the doomed attempt — the
+    # phone-conflict check runs before verify_otp() marks it used.
+    otp_b_row = db_session.execute(
+        select(PhoneOtpVerification).where(PhoneOtpVerification.user_id == _to_uuid(user_b_id))
+    ).scalar_one()
+    assert otp_b_row.verified_at is None, (
+        "a rejected cross-account verify must not burn the caller's own OTP code"
+    )
 
 
 # --------------------------------------------------------------------------

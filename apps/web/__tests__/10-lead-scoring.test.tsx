@@ -37,8 +37,12 @@ const sampleUser: UserOut = {
   email: "priya@example.com",
   phone_no: null,
   org_id: null,
+  org_name: null,
   role: null,
   phone_verified: true,
+  is_active: true,
+  admin_name: null,
+  admin_email: null,
 };
 
 const sampleCardDetail: CardDetailOut = {

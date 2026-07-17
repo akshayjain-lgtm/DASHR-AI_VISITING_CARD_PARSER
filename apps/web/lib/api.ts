@@ -102,8 +102,12 @@ export type UserOut = {
   email: string;
   phone_no: string | null;
   org_id: string | null;
+  org_name: string | null;
   role: string | null;
   phone_verified: boolean;
+  is_active: boolean;
+  admin_name: string | null;
+  admin_email: string | null;
 };
 
 export function signup(data: {
@@ -111,6 +115,7 @@ export function signup(data: {
   email: string;
   phone_no: string;
   password: string;
+  company_name?: string;
 }): Promise<{ user_id: string; phone_no: string }> {
   return request("/auth/signup", { method: "POST", body: JSON.stringify(data) });
 }
@@ -572,4 +577,78 @@ export function getDashboardAnalytics(
   if (params.endDate) query.set("end_date", params.endDate);
   const qs = query.toString();
   return request(`/analytics/dashboard${qs ? `?${qs}` : ""}`);
+}
+
+export type InvitePreviewOut = {
+  org_name: string;
+  invitee_email: string;
+  status: string;
+};
+
+export type InviteOut = {
+  invite_id: string;
+  email: string;
+  role: string;
+  status: string;
+  created_at: string;
+  expires_at: string;
+  accepted_at: string | null;
+};
+
+export type OrgMemberOut = {
+  user_id: string;
+  name: string | null;
+  email: string;
+  role: string | null;
+  phone_no: string | null;
+  phone_verified: boolean;
+  is_active: boolean;
+  created_at: string;
+};
+
+export type MyInviteOut = {
+  invite_id: string;
+  org_name: string;
+  token: string;
+  expires_at: string;
+};
+
+export function getInvitePreview(token: string): Promise<InvitePreviewOut> {
+  return request(`/orgs/invites/${token}`);
+}
+
+export function listMyInvites(): Promise<MyInviteOut[]> {
+  return request("/orgs/my-invites");
+}
+
+export function createInvite(email: string): Promise<InviteOut> {
+  return request("/orgs/invites", { method: "POST", body: JSON.stringify({ email }) });
+}
+
+export function listInvites(): Promise<InviteOut[]> {
+  return request("/orgs/invites");
+}
+
+export function revokeInvite(inviteId: string): Promise<void> {
+  return request(`/orgs/invites/${inviteId}`, { method: "DELETE" });
+}
+
+export function acceptInvite(token: string): Promise<UserOut> {
+  return request(`/orgs/invites/${token}/accept`, { method: "POST" });
+}
+
+export function listOrgMembers(): Promise<OrgMemberOut[]> {
+  return request("/orgs/members");
+}
+
+export function deactivateMember(userId: string): Promise<OrgMemberOut> {
+  return request(`/orgs/members/${userId}/deactivate`, { method: "PATCH" });
+}
+
+export function reactivateMember(userId: string): Promise<OrgMemberOut> {
+  return request(`/orgs/members/${userId}/reactivate`, { method: "PATCH" });
+}
+
+export function makeAdmin(userId: string): Promise<void> {
+  return request(`/orgs/members/${userId}/make-admin`, { method: "POST" });
 }

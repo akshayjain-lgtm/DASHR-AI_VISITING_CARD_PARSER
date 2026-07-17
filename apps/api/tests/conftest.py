@@ -74,7 +74,7 @@ from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
 
 # Safe to import now: DATABASE_URL is already pinned to the test DB.
 from app.db.session import engine as app_engine  # noqa: E402
-from app.deps import get_otp_provider  # noqa: E402
+from app.deps import get_invite_email_provider, get_otp_provider  # noqa: E402
 from app.main import app  # noqa: E402
 
 ADMIN_DATABASE_URL = "postgresql+psycopg://dashr:dashr@localhost:5432/postgres"
@@ -175,17 +175,51 @@ def fake_otp_provider() -> FakeOtpProvider:
     return FakeOtpProvider()
 
 
-@pytest.fixture
-def client(fake_otp_provider: FakeOtpProvider):
-    """A fresh TestClient per test, with the OTP provider mocked.
+class FakeInviteEmailProvider:
+    """Captures invite accept links instead of sending real email.
 
-    Never hits a real SMS/OTP API — `get_otp_provider` is overridden for
-    every single test, per the task's instruction to mock it for ALL tests.
+    `send(to_email, org_name, accept_url)` matches the `InviteEmailProvider`
+    protocol `services/invite_email_provider.py` defines. Tests read the
+    token back out of the captured `accept_url` — the same black-box shape
+    a real invitee would receive by email — rather than reaching into the
+    DB for `OrgInvite.token` directly.
+    """
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, str, str]] = []
+
+    def send(self, to_email: str, org_name: str, accept_url: str) -> None:
+        self.sent.append((to_email, org_name, accept_url))
+
+    def latest_token_for(self, to_email: str) -> str:
+        from urllib.parse import parse_qs, urlparse
+
+        for sent_email, _org_name, accept_url in reversed(self.sent):
+            if sent_email == to_email:
+                query = parse_qs(urlparse(accept_url).query)
+                return query["invite"][0]
+        raise AssertionError(f"No invite was ever sent to {to_email!r}")
+
+
+@pytest.fixture
+def fake_invite_email_provider() -> FakeInviteEmailProvider:
+    return FakeInviteEmailProvider()
+
+
+@pytest.fixture
+def client(fake_otp_provider: FakeOtpProvider, fake_invite_email_provider: FakeInviteEmailProvider):
+    """A fresh TestClient per test, with the OTP and invite-email providers mocked.
+
+    Never hits a real SMS/OTP API or sends real email — both providers are
+    overridden for every single test, per the task's instruction to mock
+    external delivery for ALL tests.
     """
     app.dependency_overrides[get_otp_provider] = lambda: fake_otp_provider
+    app.dependency_overrides[get_invite_email_provider] = lambda: fake_invite_email_provider
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.pop(get_otp_provider, None)
+    app.dependency_overrides.pop(get_invite_email_provider, None)
 
 
 # --------------------------------------------------------------------------

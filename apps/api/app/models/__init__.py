@@ -6,6 +6,7 @@ from app.models.company_enrichment import CompanyEnrichment
 from app.models.company_signals import CompanySignals
 from app.models.exhibition import Exhibition
 from app.models.free_action_allowance import FreeActionAllowance
+from app.models.org_invite import OrgInvite
 from app.models.organization import Organization
 from app.models.phone_otp_verification import PhoneOtpVerification
 from app.models.pricing_rate import PricingRate
@@ -17,6 +18,7 @@ from app.models.wallet_transaction import WalletTransaction
 
 __all__ = [
     "Organization",
+    "OrgInvite",
     "User",
     "SellerProfile",
     "Company",

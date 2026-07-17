@@ -166,6 +166,40 @@ class PaymentProviderError(Exception):
     keeping the vendor SDK boundary inside services/payments.py."""
 
 
+class UserDeactivatedError(Exception):
+    """Raised when login credentials are correct but the account's
+    is_active flag has been turned off by an org admin."""
+
+
+class InviteNotFoundError(Exception):
+    """Raised when a token/invite_id doesn't resolve to an invite that's
+    visible to the caller and currently 'pending' (also covers an invite
+    whose expires_at has passed, even though its status column still reads
+    'pending' — expiry is checked live rather than swept by a job)."""
+
+
+class InviteEmailMismatchError(Exception):
+    """Raised by accept_invite when the invite's email doesn't
+    case-insensitively match the authenticated caller's email — the one
+    check standing between an invite link and a hijacked org membership."""
+
+
+class AlreadyInOrganizationError(Exception):
+    """Raised by accept_invite when the authenticated caller already has a
+    non-null org_id — a user can belong to at most one organization."""
+
+
+class DuplicatePendingInviteError(Exception):
+    """Raised by create_invite when a pending invite already exists for the
+    same (org_id, email) pair — the partial unique index's failure surfaced
+    as a domain exception."""
+
+
+class CannotTargetSelfError(Exception):
+    """Raised when an admin action (deactivate/make-admin) targets the
+    calling admin's own user_id."""
+
+
 class MalformedWebhookPayloadError(Exception):
     """Raised by payments.handle_payment_captured when a payment.captured
     event is missing required fields, or has fields that can't be parsed

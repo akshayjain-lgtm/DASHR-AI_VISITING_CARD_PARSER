@@ -42,3 +42,4 @@ class User(Base):
     phone_no: Mapped[str | None]
     phone_verified: Mapped[bool] = mapped_column(server_default=text("false"))
     password_hash: Mapped[str | None]
+    is_active: Mapped[bool] = mapped_column(server_default=text("true"))

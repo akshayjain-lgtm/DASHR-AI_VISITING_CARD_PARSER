@@ -1,10 +1,19 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { DashrLogo } from "@/components/dashr-logo";
 import { OBtn } from "@/components/buttons";
-import { login, signup, verifyOtp, resendOtp, ApiError } from "@/lib/api";
+import {
+  login,
+  signup,
+  verifyOtp,
+  resendOtp,
+  getInvitePreview,
+  acceptInvite,
+  ApiError,
+  type InvitePreviewOut,
+} from "@/lib/api";
 
 type Mode = "login" | "signup" | "verify-otp";
 
@@ -19,7 +28,9 @@ const HEADINGS: Record<Mode, { title: string; subtitle: string }> = {
 
 export default function LoginPage() {
   const router = useRouter();
-  const [mode, setMode] = useState<Mode>("login");
+  const searchParams = useSearchParams();
+  const inviteToken = searchParams.get("invite");
+  const [mode, setMode] = useState<Mode>(inviteToken ? "signup" : "login");
 
   const [name, setName] = useState("");
   const [company, setCompany] = useState("");
@@ -31,8 +42,35 @@ export default function LoginPage() {
   const [otpCode, setOtpCode] = useState("");
   const [resendCooldown, setResendCooldown] = useState(0);
 
+  const [invitePreview, setInvitePreview] = useState<InvitePreviewOut | null>(null);
+
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!inviteToken) return;
+    getInvitePreview(inviteToken)
+      .then((preview) => {
+        setInvitePreview(preview);
+        setEmail(preview.invitee_email);
+      })
+      .catch(() => {
+        // A stale/invalid token just means no banner and a normal
+        // signup/login — never block the page over it.
+      });
+  }, [inviteToken]);
+
+  // Accepting the invite is best-effort: the user is already logged in
+  // either way, so a stale/already-used token must never block the
+  // redirect to /dashboard.
+  async function acceptPendingInviteIfAny() {
+    if (!inviteToken) return;
+    try {
+      await acceptInvite(inviteToken);
+    } catch {
+      // Swallow — see comment above.
+    }
+  }
 
   useEffect(() => {
     if (resendCooldown <= 0) return;
@@ -50,6 +88,7 @@ export default function LoginPage() {
       setLoading(true);
       try {
         await login({ email, password });
+        await acceptPendingInviteIfAny();
         router.push("/dashboard");
       } catch (err) {
         setError(err instanceof ApiError ? err.message : "Something went wrong");
@@ -67,6 +106,9 @@ export default function LoginPage() {
           email,
           phone_no: `+91${phoneDigits}`,
           password,
+          // Joining an existing org via invite creates no new Organization —
+          // only a from-scratch signup (no invite token) does.
+          company_name: inviteToken ? undefined : company || undefined,
         });
         setUserId(res.user_id);
         setMode("verify-otp");
@@ -83,6 +125,7 @@ export default function LoginPage() {
       setLoading(true);
       try {
         await verifyOtp({ user_id: userId, otp_code: otpCode });
+        await acceptPendingInviteIfAny();
         router.push("/dashboard");
       } catch {
         setError("Incorrect or expired code");
@@ -135,6 +178,12 @@ export default function LoginPage() {
           <h1 className="text-2xl font-black mb-1">{heading.title}</h1>
           <p className="text-sm text-black/40 mb-8">{heading.subtitle}</p>
 
+          {invitePreview && (mode === "signup" || mode === "login") && (
+            <div className="mb-6 border border-[#E65527]/30 bg-[#E65527]/5 px-4 py-3 text-sm">
+              You&apos;re invited to join <span className="font-bold">{invitePreview.org_name}</span>.
+            </div>
+          )}
+
           <form className="space-y-4" onSubmit={onSubmit}>
             {mode === "signup" && (
               <>
@@ -150,18 +199,20 @@ export default function LoginPage() {
                     className="w-full border border-black/15 px-4 py-2.5 text-sm focus:outline-none focus:border-[#E65527] transition-colors bg-white"
                   />
                 </div>
-                <div>
-                  <label className="text-[11px] font-black uppercase tracking-wider text-black/50 block mb-1.5">
-                    Company Name
-                  </label>
-                  <input
-                    type="text"
-                    value={company}
-                    onChange={(e) => setCompany(e.target.value)}
-                    placeholder="Thermax Limited"
-                    className="w-full border border-black/15 px-4 py-2.5 text-sm focus:outline-none focus:border-[#E65527] transition-colors bg-white"
-                  />
-                </div>
+                {!inviteToken && (
+                  <div>
+                    <label className="text-[11px] font-black uppercase tracking-wider text-black/50 block mb-1.5">
+                      Company Name
+                    </label>
+                    <input
+                      type="text"
+                      value={company}
+                      onChange={(e) => setCompany(e.target.value)}
+                      placeholder="Thermax Limited"
+                      className="w-full border border-black/15 px-4 py-2.5 text-sm focus:outline-none focus:border-[#E65527] transition-colors bg-white"
+                    />
+                  </div>
+                )}
                 <div>
                   <label className="text-[11px] font-black uppercase tracking-wider text-black/50 block mb-1.5">
                     Phone Number
@@ -197,7 +248,8 @@ export default function LoginPage() {
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="you@company.com"
-                    className="w-full border border-black/15 px-4 py-2.5 text-sm focus:outline-none focus:border-[#E65527] transition-colors bg-white"
+                    readOnly={mode === "signup" && !!invitePreview}
+                    className="w-full border border-black/15 px-4 py-2.5 text-sm focus:outline-none focus:border-[#E65527] transition-colors bg-white read-only:bg-black/5 read-only:text-black/60"
                   />
                 </div>
                 <div>
