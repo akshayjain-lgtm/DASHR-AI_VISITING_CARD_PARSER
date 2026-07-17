@@ -7,6 +7,7 @@ from app.core.config import settings
 from app.core.security import decode_access_token
 from app.db.session import SessionLocal
 from app.models.user import User
+from app.services.invite_email_provider import ConsoleInviteEmailProvider, InviteEmailProvider
 from app.services.otp_provider import ConsoleOtpProvider, OtpProvider
 
 COOKIE_NAME = "dashr_session"
@@ -33,6 +34,18 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     if user is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
+    # Re-checked on every request against the live row (not cached on the
+    # JWT), so an admin deactivating a teammate cuts off that teammate's
+    # already-issued session cookie immediately, not just their next login.
+    if not user.is_active:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    return user
+
+
+def get_current_admin(user: User = Depends(get_current_user)) -> User:
+    if user.role != "admin" or user.org_id is None:
+        raise HTTPException(status_code=403, detail="Admin access required")
     return user
 
 
@@ -46,3 +59,14 @@ def get_otp_provider() -> OtpProvider:
             "must not be used when ENVIRONMENT=production"
         )
     return ConsoleOtpProvider()
+
+
+def get_invite_email_provider() -> InviteEmailProvider:
+    if settings.environment == "production":
+        # Same rationale as get_otp_provider above: ConsoleInviteEmailProvider
+        # only logs the accept link, it must never be what actually ships.
+        raise RuntimeError(
+            "No production invite email provider configured — "
+            "ConsoleInviteEmailProvider must not be used when ENVIRONMENT=production"
+        )
+    return ConsoleInviteEmailProvider()

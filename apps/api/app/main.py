@@ -9,6 +9,7 @@ from app.routers.archive_uploads import router as archive_uploads_router
 from app.routers.auth import router as auth_router
 from app.routers.cards import router as cards_router
 from app.routers.exhibitions import router as exhibitions_router
+from app.routers.orgs import router as orgs_router
 from app.routers.payments import router as payments_router
 from app.routers.profile import router as profile_router
 from app.routers.wallet import router as wallet_router
@@ -23,7 +24,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["Content-Type"],
 )
 
@@ -32,6 +33,7 @@ app.include_router(archive_uploads_router)
 app.include_router(auth_router)
 app.include_router(cards_router)
 app.include_router(exhibitions_router)
+app.include_router(orgs_router)
 app.include_router(payments_router)
 app.include_router(profile_router)
 app.include_router(wallet_router)

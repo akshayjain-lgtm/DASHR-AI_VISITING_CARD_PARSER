@@ -20,7 +20,7 @@ const NAV = [
   { id: "upload", label: "Upload", icon: Upload, path: "/upload" },
   { id: "profile", label: "Company Profile", icon: Building2, path: "/profile" },
   { id: "wallet", label: "Wallet", icon: Wallet, path: "/wallet" },
-  { id: "home", label: "Settings", icon: Settings, path: "/" },
+  { id: "settings", label: "Settings", icon: Settings, path: "/settings" },
 ];
 
 // The logo header, nav list, and sign-out button — identical between the

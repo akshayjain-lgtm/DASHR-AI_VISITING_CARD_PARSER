@@ -24,6 +24,7 @@ from app.services.exceptions import (
     PhoneAlreadyVerifiedError,
     PhoneNotVerifiedError,
     ResendCooldownError,
+    UserDeactivatedError,
     UserNotFoundError,
 )
 from app.services.otp_provider import OtpProvider
@@ -65,6 +66,10 @@ def signup(
         user = auth_service.signup(db, data, provider)
     except DuplicateEmailError:
         raise HTTPException(status_code=409, detail="Email already registered")
+    except PhoneAlreadyVerifiedError:
+        raise HTTPException(
+            status_code=409, detail="Phone number already verified on another account"
+        )
 
     # No response.set_cookie call anywhere in this handler — signup alone
     # must never issue a session, only verify-otp does.
@@ -87,7 +92,7 @@ def verify_otp(
         )
 
     _set_session_cookie(response, user.user_id)
-    return UserOut.model_validate(user)
+    return auth_service.to_user_out(db, user)
 
 
 @router.post("/signup/resend-otp", status_code=204)
@@ -110,8 +115,8 @@ def resend_otp(
 
 
 @router.get("/me", response_model=UserOut)
-def me(user: User = Depends(get_current_user)):
-    return UserOut.model_validate(user)
+def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return auth_service.to_user_out(db, user)
 
 
 @router.post("/login", response_model=UserOut)
@@ -122,9 +127,11 @@ def login(data: LoginRequest, response: Response, db: Session = Depends(get_db))
         raise HTTPException(status_code=401, detail="Invalid email or password")
     except PhoneNotVerifiedError:
         raise HTTPException(status_code=403, detail="Phone number not verified")
+    except UserDeactivatedError:
+        raise HTTPException(status_code=403, detail="Account has been deactivated")
 
     _set_session_cookie(response, user.user_id)
-    return UserOut.model_validate(user)
+    return auth_service.to_user_out(db, user)
 
 
 @router.post("/logout", status_code=204)
