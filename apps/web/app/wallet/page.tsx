@@ -102,7 +102,7 @@ export default function WalletPage() {
   const balance = wallet ? parseFloat(wallet.balance_inr) : 0;
 
   return (
-    <div className="min-h-screen bg-white flex">
+    <div className="min-h-screen bg-white flex flex-col sm:flex-row">
       <RazorpayCheckoutScript />
       <Sidebar active="wallet" />
       <main className="flex-1 p-10 max-w-3xl">

@@ -1,170 +1,97 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Search, Filter, Upload } from "lucide-react";
+import { Upload } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Sidebar } from "@/components/sidebar";
 import { OBtn } from "@/components/buttons";
-import { CardDetailDrawer } from "@/components/card-detail-drawer";
+import { DashboardFilterBar, rangeToDates, type DashboardFilters } from "@/components/dashboard-filter-bar";
+import { LeadVolumeChart } from "@/components/charts/lead-volume-chart";
+import { IndustryMixChart } from "@/components/charts/industry-mix-chart";
+import { ScoreDistributionChart } from "@/components/charts/score-distribution-chart";
+import { ExhibitionPerformanceChart } from "@/components/charts/exhibition-performance-chart";
+import { RoleMixChart } from "@/components/charts/role-mix-chart";
+import { RegionMixChart } from "@/components/charts/region-mix-chart";
 import { getCurrentUser } from "@/lib/auth";
-import { listCards, type CardOut, type UserOut } from "@/lib/api";
-
-function ScoreBadge({ score }: { score: number }) {
-  if (score >= 80)
-    return (
-      <span className="inline-flex px-2.5 py-0.5 text-[11px] font-black bg-[#E65527] text-white tracking-wide">
-        {score}% HIGH
-      </span>
-    );
-  if (score >= 60)
-    return (
-      <span className="inline-flex px-2.5 py-0.5 text-[11px] font-black bg-black/8 text-black/60 tracking-wide">
-        {score}% MED
-      </span>
-    );
-  return (
-    <span className="inline-flex px-2.5 py-0.5 text-[11px] font-black bg-black/4 text-black/35 tracking-wide">
-      {score}% LOW
-    </span>
-  );
-}
-
-function UnscoredBadge() {
-  return (
-    <span className="inline-flex px-2.5 py-0.5 text-[11px] font-black bg-black/4 text-black/30 tracking-wide">
-      UNSCORED
-    </span>
-  );
-}
+import {
+  listExhibitions,
+  getDashboardAnalytics,
+  type ExhibitionOut,
+  type UserOut,
+  type DashboardAnalyticsOut,
+} from "@/lib/api";
 
 export default function Dashboard() {
   const router = useRouter();
-  const [search, setSearch] = useState("");
   const [user, setUser] = useState<UserOut | null>(null);
-  const [cards, setCards] = useState<CardOut[]>([]);
-  const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  const [exhibitions, setExhibitions] = useState<ExhibitionOut[]>([]);
+  const [filters, setFilters] = useState<DashboardFilters>({ exhibitionIds: [], range: "30d" });
+  const [analytics, setAnalytics] = useState<DashboardAnalyticsOut | null>(null);
 
   useEffect(() => {
     getCurrentUser().then(setUser);
+    listExhibitions().then(setExhibitions);
   }, []);
-
-  function refreshCards() {
-    return listCards().then(setCards);
-  }
 
   useEffect(() => {
-    refreshCards();
-  }, []);
+    const { startDate, endDate } = rangeToDates(filters);
+    getDashboardAnalytics({ exhibitionIds: filters.exhibitionIds, startDate, endDate }).then(setAnalytics);
+  }, [filters]);
 
-  const filtered = cards.filter(
-    (c) =>
-      (c.full_name ?? "").toLowerCase().includes(search.toLowerCase()) ||
-      (c.company_name ?? "").toLowerCase().includes(search.toLowerCase())
-  );
-
-  const highCount = cards.filter((c) => c.lead_score != null && c.lead_score >= 80).length;
-  const lowCount = cards.filter((c) => c.lead_score != null && c.lead_score < 60).length;
+  const totalLeads = analytics
+    ? analytics.score_distribution.high +
+      analytics.score_distribution.medium +
+      analytics.score_distribution.low +
+      analytics.score_distribution.unscored
+    : 0;
 
   return (
-    <div className="min-h-screen bg-white flex">
+    <div className="min-h-screen bg-white flex flex-col sm:flex-row">
       <Sidebar active="dashboard" />
       <main className="flex-1 flex flex-col min-h-screen overflow-auto">
         {/* Topbar */}
-        <div className="border-b border-black/10 px-8 py-4 flex items-center justify-between bg-white sticky top-0 z-10">
-          <div>
+        <div className="border-b border-black/10 px-4 sm:px-8 py-4 flex items-center justify-between gap-3 bg-white sticky top-0 z-10">
+          <div className="min-w-0">
             {user && (
-              <p className="text-xs font-bold text-[#E65527] mb-1">Hi {user.name ?? user.email}</p>
+              <p className="text-xs font-bold text-[#E65527] mb-1 truncate">Hi {user.name ?? user.email}</p>
             )}
-            <h1 className="font-black text-lg">Leads</h1>
-            <p className="text-xs text-black/35 mt-0.5">{cards.length} contacts</p>
+            <h1 className="font-black text-lg">Dashboard</h1>
+            <p className="text-xs text-black/35 mt-0.5">{totalLeads} leads analyzed</p>
           </div>
-          <OBtn onClick={() => router.push("/upload")} className="text-sm gap-2">
+          <OBtn onClick={() => router.push("/upload")} className="text-sm gap-2 shrink-0">
             <Upload size={13} /> Bulk Upload
           </OBtn>
         </div>
 
-        <div className="p-8 space-y-6">
-          {/* Stats */}
-          <div className="grid grid-cols-3 gap-4">
-            {[
-              { label: "Total Leads", value: cards.length, sub: "Across all exhibitions", accent: false },
-              { label: "High Fit", value: highCount, sub: "Score ≥ 80% — call first", accent: true },
-              { label: "Low Fit", value: lowCount, sub: "Score < 60% — deprioritise", accent: false },
-            ].map(({ label, value, sub, accent }) => (
-              <div
-                key={label}
-                className={`border p-5 ${
-                  accent ? "border-[#E65527]/25 bg-[#E65527]/4" : "border-black/8 bg-white"
-                }`}
-              >
-                <div className={`text-3xl font-black mb-1 ${accent ? "text-[#E65527]" : "text-black"}`}>
-                  {value}
-                </div>
-                <div className="text-sm font-bold">{label}</div>
-                <div className="text-xs text-black/35 mt-0.5">{sub}</div>
-              </div>
-            ))}
+        <div className="p-4 sm:p-8 space-y-6">
+          {/* Stats — High Fit / Low Fit tiles removed for the time being,
+              until scoring itself is revisited; Total Leads only. */}
+          <div className="border border-black/8 bg-white p-5 w-full sm:max-w-xs">
+            <div className="text-3xl font-black mb-1 text-black">{totalLeads}</div>
+            <div className="text-sm font-bold">Total Leads</div>
+            <div className="text-xs text-black/35 mt-0.5">Across all exhibitions</div>
           </div>
 
-          {/* Filters */}
-          <div className="flex items-center gap-3">
-            <div className="relative max-w-xs flex-1">
-              <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-black/30" />
-              <input
-                type="text"
-                placeholder="Search name or company…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="w-full border border-black/12 pl-8 pr-4 py-2 text-sm focus:outline-none focus:border-[#E65527] bg-white transition-colors"
-              />
-            </div>
-            <button className="border border-black/12 px-3 py-2 text-sm flex items-center gap-2 text-black/50 hover:border-black/25 transition-colors">
-              <Filter size={12} /> Filter
-            </button>
-            <div className="flex-1" />
-          </div>
+          {/* Filters — one row (stacks on narrow screens), above the
+              charts; every chart re-scopes to the same slice so all
+              numbers always agree. */}
+          <DashboardFilterBar exhibitions={exhibitions} filters={filters} onFiltersChange={setFilters} />
 
-          {/* Table */}
-          <div className="border border-black/10 overflow-hidden">
-            <div className="grid grid-cols-[1fr_1fr_1fr_1fr] gap-4 bg-[#fafafa] border-b border-black/8 px-5 py-3 text-[11px] font-black uppercase tracking-wider text-black/35 items-center">
-              <span>Name</span>
-              <span>Company</span>
-              <span>Designation</span>
-              <span>Score</span>
+          {/* Analytics */}
+          {analytics ? (
+            <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
+              <LeadVolumeChart data={analytics.lead_volume} />
+              <IndustryMixChart data={analytics.industry_mix} />
+              <ScoreDistributionChart data={analytics.score_distribution} />
+              <ExhibitionPerformanceChart data={analytics.exhibition_performance} />
+              <RoleMixChart data={analytics.role_mix} />
+              <RegionMixChart data={analytics.region_mix} />
             </div>
-            {filtered.map((card) => (
-              <div
-                key={card.card_id}
-                onClick={() => setSelectedCardId(card.card_id)}
-                className="grid grid-cols-[1fr_1fr_1fr_1fr] gap-4 px-5 py-4 border-b border-black/5 text-sm hover:bg-[#E65527]/2 transition-colors cursor-pointer items-center"
-              >
-                <span className="font-semibold">{card.full_name ?? "Unnamed contact"}</span>
-                <span className="text-black/55">{card.company_name ?? "—"}</span>
-                <span className="text-black/50">{card.job_title ?? "—"}</span>
-                {card.lead_score == null ? (
-                  <UnscoredBadge />
-                ) : (
-                  <ScoreBadge score={card.lead_score} />
-                )}
-              </div>
-            ))}
-            {filtered.length === 0 && (
-              <div className="px-5 py-12 text-center text-sm text-black/30">
-                No leads match your search.
-              </div>
-            )}
-          </div>
+          ) : (
+            <div className="text-sm text-black/30 py-8 text-center">Loading analytics…</div>
+          )}
         </div>
       </main>
-
-      {selectedCardId && (
-        <CardDetailDrawer
-          cardId={selectedCardId}
-          onClose={() => setSelectedCardId(null)}
-          onChanged={refreshCards}
-          onNavigateToCard={setSelectedCardId}
-        />
-      )}
     </div>
   );
 }

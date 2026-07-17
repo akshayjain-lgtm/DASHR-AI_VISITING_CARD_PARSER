@@ -188,6 +188,16 @@ function createApiMock(opts: {
       listCardsCallCount += 1;
       return jsonResponse(200, cardsState);
     }
+    if (method === "GET" && /^\/api\/analytics\/dashboard(\?.*)?$/.test(url)) {
+      return jsonResponse(200, {
+        lead_volume: [],
+        industry_mix: [],
+        score_distribution: { high: 0, medium: 0, low: 0, unscored: 0 },
+        exhibition_performance: [],
+        role_mix: [],
+        region_mix: [],
+      });
+    }
     if (method === "POST" && url === "/api/cards/export") {
       const body = init?.body ? JSON.parse(String(init.body)) : {};
       exportCalls.push(body);
@@ -335,11 +345,11 @@ describe("Upload page Export bulk action", () => {
 
 describe("Dashboard page no longer has an Export CTA", () => {
   it("does not render an Export button/control on /dashboard", async () => {
-    const { fetchMock } = createApiMock({ cards: [cardFullyIneligible, cardFullyIneligible2] });
+    const { fetchMock } = createApiMock({});
     vi.stubGlobal("fetch", fetchMock);
 
     render(<Dashboard />);
-    await screen.findByText("Erin Ineligible");
+    await screen.findByText("Total Leads");
 
     expect(
       screen.queryByRole("button", { name: /export/i }),
