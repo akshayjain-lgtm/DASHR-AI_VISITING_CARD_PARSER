@@ -260,6 +260,16 @@ export function CardDetailDrawer({
                         </span>
                       )}
                     </div>
+                    {card.company.catalog_url && (
+                      <a
+                        href={card.company.catalog_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-block text-xs text-[#E65527] underline underline-offset-2 hover:text-[#c8461f]"
+                      >
+                        View IndiaMART catalogue ↗
+                      </a>
+                    )}
                   </div>
                 ) : (
                   <p className="text-sm text-black/30">—</p>

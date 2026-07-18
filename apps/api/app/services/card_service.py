@@ -404,6 +404,7 @@ def get_card_detail(db: Session, current_user: User, card_id: uuid.UUID) -> dict
             "udyam_registered": signals.udyam_registered if signals else None,
             "hiring_signal": signals.hiring_signal if signals else None,
             "google_rating": signals.google_rating if signals else None,
+            "catalog_url": signals.catalog_url if signals else None,
         }
         if company
         else None,

@@ -116,7 +116,12 @@ def _run_lookup(
 
 
 def run_all_signal_lookups(
-    db: Session, company: Company, gst_number: str | None
+    db: Session,
+    company: Company,
+    gst_number: str | None,
+    email_domain: str | None = None,
+    website: str | None = None,
+    products_offered: str | None = None,
 ) -> tuple[CompanySignals, bool]:
     data: dict[str, Any] = {}
     name = company.name or ""
@@ -201,9 +206,11 @@ def run_all_signal_lookups(
     # 11. IndiaMART/TradeIndia/JustDial public directory listing
     data.update(_run_lookup(
         db, company.company_id, "indiamart",
-        lambda: local_presence_provider.get_local_presence_provider().lookup_marketplace(name),
+        lambda: local_presence_provider.get_local_presence_provider().lookup_marketplace(
+            name, email_domain, website or company.website, products_offered
+        ),
         ["marketplace_vintage_years", "marketplace_verified_badge",
-         "marketplace_located_in_industrial_area"],
+         "marketplace_located_in_industrial_area", "catalog_url"],
     ))
 
     any_signal_found = any(value is not None for value in data.values())

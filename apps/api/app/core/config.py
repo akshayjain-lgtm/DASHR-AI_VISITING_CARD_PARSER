@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     razorpay_key_id: str = ""
     razorpay_key_secret: str = ""
     razorpay_webhook_secret: str = ""
+    apify_api_token: str = ""
+    # "org/name" form, as shown in the Apify console — converted to the
+    # "org~name" form the REST API's URL path actually requires at call time.
+    apify_google_search_actor_id: str = "apify/google-search-scraper"
+    apify_request_timeout_seconds: int = 60
     frontend_url: str = Field(default="http://localhost:3000", alias="FRONTEND_URL")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)

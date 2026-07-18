@@ -72,6 +72,9 @@ class CardCompanyOut(BaseModel):
     udyam_registered: bool | None
     hiring_signal: str | None
     google_rating: float | None
+    # This supplier's public IndiaMART storefront/catalogue URL; null until
+    # enrichment finds one (mirrors CompanySignals.catalog_url).
+    catalog_url: str | None
 
 
 class CardEmailOut(BaseModel):

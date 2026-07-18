@@ -70,6 +70,7 @@ class CompanySignals(Base):
     marketplace_vintage_years: Mapped[int | None]
     marketplace_verified_badge: Mapped[bool | None] = mapped_column(Boolean)
     marketplace_located_in_industrial_area: Mapped[bool | None] = mapped_column(Boolean)
+    catalog_url: Mapped[str | None]
 
     # Set explicitly by enrichment_service.run_all_signal_lookups on every
     # upsert — no ORM-level onupdate= here, since that would be dead code

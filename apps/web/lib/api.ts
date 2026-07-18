@@ -215,6 +215,8 @@ export type CardCompanyOut = {
   udyam_registered: boolean | null;
   hiring_signal: string | null;
   google_rating: number | null;
+  // Public IndiaMART storefront/catalogue URL for this supplier; null until enrichment finds one.
+  catalog_url: string | null;
 };
 
 export type CardEmailOut = {

@@ -3,8 +3,11 @@ import uuid
 from datetime import datetime, timezone
 
 from celery.exceptions import MaxRetriesExceededError
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
+from app.models.card_email import CardEmail
 from app.models.company import Company
 from app.models.visiting_card import VisitingCard
 from app.services import billing, enrichment_service, enrichment_summary
@@ -14,6 +17,32 @@ from app.workers.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 _MAX_ENRICHMENT_RETRIES = 3
+
+# Personal/free email providers excluded from the email-domain IndiaMART
+# fallback search — "gmail.com IndiaMart" would never correspond to any one
+# company's storefront, so a domain from one of these is never worth a
+# second Apify call.
+_GENERIC_EMAIL_DOMAINS = frozenset({
+    "gmail.com", "yahoo.com", "yahoo.co.in", "outlook.com", "hotmail.com",
+    "rediffmail.com", "icloud.com", "live.com", "aol.com", "protonmail.com",
+})
+
+
+def _card_email_domain(db: Session, card_id: uuid.UUID) -> str | None:
+    """Best-effort domain off this card's primary (or first available)
+    email, for the IndiaMART catalog_url lookup's fallback search — never
+    raises, and returns None for a personal/free-provider domain since that
+    would never identify a specific company's storefront."""
+    email = db.scalar(
+        select(CardEmail.email)
+        .where(CardEmail.card_id == card_id, CardEmail.email.isnot(None))
+        .order_by(CardEmail.is_primary.desc())
+        .limit(1)
+    )
+    if not email or "@" not in email:
+        return None
+    domain = email.rsplit("@", 1)[1].strip().lower()
+    return domain if domain and domain not in _GENERIC_EMAIL_DOMAINS else None
 
 
 @celery_app.task(
@@ -62,12 +91,16 @@ def enrich_company_task(
         gst_number = None
         refund_user_id = None
         products_offered = None
+        email_domain = None
+        website = None
         if source_card_id is not None:
             source_card = db.get(VisitingCard, uuid.UUID(source_card_id))
             if source_card is not None:
                 gst_number = source_card.gst_number
                 refund_user_id = source_card.user_id
                 products_offered = source_card.products_offered
+                email_domain = _card_email_domain(db, source_card.card_id)
+                website = source_card.website
 
         is_retry = self.request.retries > 0
         if not is_retry:
@@ -88,7 +121,7 @@ def enrich_company_task(
 
         try:
             signals, any_signal_found = enrichment_service.run_all_signal_lookups(
-                db, company, gst_number
+                db, company, gst_number, email_domain, website, products_offered
             )
             summary = enrichment_summary.generate_summary(company, signals)
         except Exception as exc:
