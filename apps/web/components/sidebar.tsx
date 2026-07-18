@@ -2,42 +2,32 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import {
-  LayoutDashboard,
-  Upload,
-  Building2,
-  Wallet,
-  Settings,
-  HelpCircle,
-  LogOut,
-  Menu,
-  X,
-} from "lucide-react";
+import { LayoutDashboard, Upload, Wallet, Settings, HelpCircle, Menu, X } from "lucide-react";
 import { DashrLogo } from "./dashr-logo";
-import { logout } from "@/lib/api";
 
 const NAV = [
-  { id: "dashboard", label: "Leads", icon: LayoutDashboard, path: "/dashboard" },
-  { id: "upload", label: "Upload", icon: Upload, path: "/upload" },
-  { id: "profile", label: "Company Profile", icon: Building2, path: "/profile" },
+  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, path: "/dashboard" },
+  { id: "upload", label: "Cardex", icon: Upload, path: "/upload" },
   { id: "wallet", label: "Wallet", icon: Wallet, path: "/wallet" },
   { id: "settings", label: "Settings", icon: Settings, path: "/settings" },
   { id: "faq", label: "FAQ", icon: HelpCircle, path: "/faq" },
 ];
 
-// The logo header, nav list, and sign-out button — identical between the
-// always-visible desktop column and the mobile slide-in drawer, so both
-// render this instead of duplicating the chrome around navButtons(). Only
-// `onClose` (mobile-only, renders a close button in the header) differs.
+// The logo header and nav list — identical between the always-visible
+// desktop column and the mobile slide-in drawer, so both render this
+// instead of duplicating the chrome around navButtons(). Only `onClose`
+// (mobile-only, renders a close button in the header) differs.
+//
+// Sign Out deliberately does NOT live here — it's on the Settings page
+// (top-right of the Company Profile / Roles and Access tab row), not
+// duplicated across every logged-in page.
 function SidebarContent({
   active,
   onNavigate,
-  onSignOut,
   onClose,
 }: {
   active: string;
   onNavigate: (path: string) => void;
-  onSignOut: () => void;
   onClose?: () => void;
 }) {
   return (
@@ -66,15 +56,6 @@ function SidebarContent({
           </button>
         ))}
       </nav>
-      <div className="p-3 border-t border-white/8">
-        <button
-          onClick={onSignOut}
-          className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-white/35 hover:text-white transition-colors hover:bg-white/5"
-        >
-          <LogOut size={14} />
-          Sign Out
-        </button>
-      </div>
     </>
   );
 }
@@ -82,24 +63,11 @@ function SidebarContent({
 // Fixed w-52 column at sm+ (unchanged desktop/tablet behavior); below that,
 // the always-visible column would eat ~40% of a phone screen's width, so it
 // collapses behind a hamburger-triggered slide-in drawer instead. Shared by
-// every page (Dashboard, Upload, Company Profile, Wallet, Settings) — this
-// is the one place that needs to change for all of them to be phone-usable.
+// every page (Dashboard, Cardex, Wallet, Settings) — this is the one place
+// that needs to change for all of them to be phone-usable.
 export function Sidebar({ active }: { active: string }) {
   const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
-
-  async function handleSignOut() {
-    try {
-      await logout();
-    } finally {
-      // Hard navigation, not router.push: a soft client-side transition can
-      // be served from Next's Router Cache, which may still hold a stale
-      // "/" -> "/dashboard" redirect cached from while this session was
-      // authenticated — that would bounce a freshly-logged-out user right
-      // back into the dashboard. A full page load always re-hits middleware.
-      window.location.href = "/";
-    }
-  }
 
   return (
     <>
@@ -125,7 +93,6 @@ export function Sidebar({ active }: { active: string }) {
                 setMobileOpen(false);
                 router.push(path);
               }}
-              onSignOut={handleSignOut}
               onClose={() => setMobileOpen(false)}
             />
           </aside>
@@ -135,7 +102,7 @@ export function Sidebar({ active }: { active: string }) {
 
       {/* Desktop/tablet sidebar — unchanged */}
       <aside className="hidden sm:flex w-52 bg-[#0d0d0d] min-h-screen flex-col shrink-0">
-        <SidebarContent active={active} onNavigate={(path) => router.push(path)} onSignOut={handleSignOut} />
+        <SidebarContent active={active} onNavigate={(path) => router.push(path)} />
       </aside>
     </>
   );

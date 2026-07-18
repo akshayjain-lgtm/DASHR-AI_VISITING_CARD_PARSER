@@ -8,7 +8,8 @@ per-user prepaid wallet/free-tier billing model. It exists alongside the
 homepage as a static marketing surface: prospects evaluating the product
 and existing users with billing questions both land here before ever
 signing in. This is a content/navigation feature only — it does not touch
-extraction, enrichment, scoring, or billing logic, only documents it.
+extraction, enrichment, scoring, or billing logic, 
+only documents it.
 
 ## Depends on
 None. This is a standalone static marketing page and can be built

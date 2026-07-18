@@ -2,12 +2,13 @@
 // `.claude/specs/17-admin-user-management.md`), written directly against the
 // spec's documented frontend contract:
 //
-//   - `/settings` renders a full Team-management UI (invite form, pending
-//     invites table, members table with Deactivate/Reactivate/Make Admin row
-//     actions) for an admin; a read-only "you are a Member" panel for a
-//     non-admin org member; and a "not part of an organization yet"
-//     placeholder for an org-less user. It never shows management controls
-//     to a non-admin.
+//   - `/settings` renders a "Company Profile" tab (default) and a "Roles and
+//     Access" tab. The Roles and Access tab shows a full Team-management UI
+//     (invite form, pending invites table, members table with
+//     Deactivate/Reactivate/Make Admin row actions) for an admin; a
+//     read-only "you are a Member" panel for a non-admin org member; and a
+//     "not part of an organization yet" placeholder for an org-less user. It
+//     never shows management controls to a non-admin.
 //   - The login/signup page reads an `?invite=<token>` query param: shows a
 //     "you're invited to join {org_name}" banner, hides the Company Name
 //     field in signup mode (joining an existing org creates no new one),
@@ -22,7 +23,31 @@ import { render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import SettingsPage from "@/app/settings/page";
 import LoginPage from "@/app/login/page";
-import type { UserOut, InviteOut, OrgMemberOut, InvitePreviewOut } from "@/lib/api";
+import type { UserOut, InviteOut, OrgMemberOut, InvitePreviewOut, SellerProfileOut } from "@/lib/api";
+
+const emptyProfile: SellerProfileOut = {
+  profile_id: null,
+  name: null,
+  designation: null,
+  company_name: null,
+  industry: null,
+  product_lines: null,
+  last_year_revenue: null,
+  revenue_currency: null,
+  target_customer_description: null,
+  target_regions: null,
+  gst_no: null,
+  billing_address: null,
+  created_at: null,
+  updated_at: null,
+};
+
+// The Company Profile tab is the default view and fetches its own data on
+// mount regardless of which tab a test cares about, so every fetch mock in
+// this file needs to answer it.
+async function goToRolesAndAccessTab(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: /roles and access/i }));
+}
 
 const pushMock = vi.fn();
 let searchParamsValue = new URLSearchParams();
@@ -139,6 +164,7 @@ function createSettingsApiMock(opts: {
     calls.push({ method, url });
 
     if (method === "GET" && url === "/api/auth/me") return jsonResponse(200, opts.me);
+    if (method === "GET" && url === "/api/profile") return jsonResponse(200, emptyProfile);
     if (method === "GET" && url === "/api/orgs/members") return jsonResponse(200, members);
     if (method === "GET" && url === "/api/orgs/invites") return jsonResponse(200, invites);
 
@@ -185,8 +211,10 @@ describe("/settings -- admin view", () => {
       invites: sampleInvites,
     });
     vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
 
     render(<SettingsPage />);
+    await goToRolesAndAccessTab(user);
 
     await screen.findByText("Invite a Teammate");
     expect(screen.getByPlaceholderText("teammate@company.com")).toBeInTheDocument();
@@ -202,6 +230,7 @@ describe("/settings -- admin view", () => {
     const user = userEvent.setup();
 
     render(<SettingsPage />);
+    await goToRolesAndAccessTab(user);
     await screen.findByText("Invite a Teammate");
 
     await user.type(screen.getByPlaceholderText("teammate@company.com"), "newhire@acme.com");
@@ -221,6 +250,7 @@ describe("/settings -- admin view", () => {
     const user = userEvent.setup();
 
     render(<SettingsPage />);
+    await goToRolesAndAccessTab(user);
     await screen.findByText("pending@acme.com");
 
     await user.click(screen.getByRole("button", { name: /revoke/i }));
@@ -238,6 +268,7 @@ describe("/settings -- admin view", () => {
     const user = userEvent.setup();
 
     render(<SettingsPage />);
+    await goToRolesAndAccessTab(user);
     await screen.findByText("Teammate One");
 
     const teammateRow = screen.getByText("Teammate One").closest("div.grid") as HTMLElement;
@@ -268,6 +299,7 @@ describe("/settings -- admin view", () => {
     const user = userEvent.setup();
 
     render(<SettingsPage />);
+    await goToRolesAndAccessTab(user);
     await screen.findByText("Teammate One");
 
     const teammateRow = screen.getByText("Teammate One").closest("div.grid") as HTMLElement;
@@ -285,8 +317,10 @@ describe("/settings -- admin view", () => {
   it("never shows management controls next to the admin's own row", async () => {
     const { fetchMock } = createSettingsApiMock({ me: adminUser, members: sampleMembers });
     vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
 
     render(<SettingsPage />);
+    await goToRolesAndAccessTab(user);
     await screen.findByText("Teammate One");
 
     const adminRow = screen.getByText("admin@acme.com").closest("div.grid") as HTMLElement;
@@ -303,11 +337,14 @@ describe("/settings -- member and org-less views", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : String(input);
       if (url === "/api/auth/me") return jsonResponse(200, memberUser);
+      if (url === "/api/profile") return jsonResponse(200, emptyProfile);
       throw new Error(`Unhandled fetch call in test: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
 
     render(<SettingsPage />);
+    await goToRolesAndAccessTab(user);
 
     await screen.findByText(/You are a Member/i);
     expect(screen.getByText(adminUser.name as string)).toBeInTheDocument();
@@ -324,12 +361,15 @@ describe("/settings -- member and org-less views", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : String(input);
       if (url === "/api/auth/me") return jsonResponse(200, orgLessUser);
+      if (url === "/api/profile") return jsonResponse(200, emptyProfile);
       if (url === "/api/orgs/my-invites") return jsonResponse(200, []);
       throw new Error(`Unhandled fetch call in test: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
 
     render(<SettingsPage />);
+    await goToRolesAndAccessTab(user);
 
     await screen.findByText(/not part of an organization yet/i);
   });
@@ -348,6 +388,7 @@ describe("/settings -- member and org-less views", () => {
       const method = (init?.method ?? "GET").toUpperCase();
       calls.push(`${method} ${url}`);
       if (url === "/api/auth/me") return jsonResponse(200, orgLessUser);
+      if (url === "/api/profile") return jsonResponse(200, emptyProfile);
       if (url === "/api/orgs/my-invites") return jsonResponse(200, accepted ? [] : [pendingInvite]);
       if (url === "/api/orgs/invites/some-token/accept" && method === "POST") {
         accepted = true;
@@ -359,6 +400,7 @@ describe("/settings -- member and org-less views", () => {
     const user = userEvent.setup();
 
     render(<SettingsPage />);
+    await goToRolesAndAccessTab(user);
 
     await screen.findByText("Acme Manufacturing");
     await user.click(screen.getByRole("button", { name: "Accept" }));

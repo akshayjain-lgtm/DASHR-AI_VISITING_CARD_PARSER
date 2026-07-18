@@ -160,6 +160,8 @@ export type ExhibitionOut = {
 
 export type SellerProfileOut = {
   profile_id: string | null;
+  name: string | null;
+  designation: string | null;
   company_name: string | null;
   industry: string | null;
   product_lines: string | null;
@@ -310,6 +312,8 @@ export function getProfile(): Promise<SellerProfileOut> {
 }
 
 export function updateProfile(data: {
+  name?: string;
+  designation?: string;
   company_name?: string;
   industry?: string;
   product_lines?: string;
@@ -651,4 +655,13 @@ export function reactivateMember(userId: string): Promise<OrgMemberOut> {
 
 export function makeAdmin(userId: string): Promise<void> {
   return request(`/orgs/members/${userId}/make-admin`, { method: "POST" });
+}
+
+export function submitContactEnquiry(data: {
+  name: string;
+  phone_no: string;
+  email: string;
+  query: string;
+}): Promise<void> {
+  return request("/contact", { method: "POST", body: JSON.stringify(data) });
 }

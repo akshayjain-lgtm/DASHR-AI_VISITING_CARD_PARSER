@@ -7,6 +7,7 @@ from app.core.config import settings
 from app.core.security import decode_access_token
 from app.db.session import SessionLocal
 from app.models.user import User
+from app.services.contact_email_provider import ConsoleContactEmailProvider, ContactEmailProvider
 from app.services.invite_email_provider import ConsoleInviteEmailProvider, InviteEmailProvider
 from app.services.otp_provider import ConsoleOtpProvider, OtpProvider
 
@@ -70,3 +71,14 @@ def get_invite_email_provider() -> InviteEmailProvider:
             "ConsoleInviteEmailProvider must not be used when ENVIRONMENT=production"
         )
     return ConsoleInviteEmailProvider()
+
+
+def get_contact_email_provider() -> ContactEmailProvider:
+    if settings.environment == "production":
+        # Same rationale as get_otp_provider above: ConsoleContactEmailProvider
+        # only logs the enquiry, it must never be what actually ships.
+        raise RuntimeError(
+            "No production contact email provider configured — "
+            "ConsoleContactEmailProvider must not be used when ENVIRONMENT=production"
+        )
+    return ConsoleContactEmailProvider()

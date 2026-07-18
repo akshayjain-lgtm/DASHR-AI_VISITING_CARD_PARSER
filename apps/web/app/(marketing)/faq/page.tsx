@@ -58,7 +58,7 @@ const FAQ_CATEGORIES: FaqCategory[] = [
       {
         question: "Can I tune the scoring model to my own product?",
         answer:
-          "Yes — your target customer profile (industry, company size, regions, product lines) is set on your Company Profile page and calibrates how every lead is scored.",
+          "Yes — your target customer profile (industry, company size, regions, product lines) is set under Settings → Company Profile and calibrates how every lead is scored.",
       },
     ],
   },
@@ -144,8 +144,8 @@ export default function FaqPage() {
         ctaLabel="Try Demo"
         onCtaClick={() => router.push("/product")}
         secondary={
-          <a href="mailto:hello@dashr.ai" className="text-white font-bold text-sm hover:underline">
-            hello@dashr.ai
+          <a href="mailto:info@dashrtech.com" className="text-white font-bold text-sm hover:underline">
+            info@dashrtech.com
           </a>
         }
       />

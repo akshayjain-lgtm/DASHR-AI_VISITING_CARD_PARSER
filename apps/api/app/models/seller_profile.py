@@ -23,6 +23,7 @@ class SellerProfile(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False, unique=True
     )
+    designation: Mapped[str | None]
     company_name: Mapped[str | None]
     industry: Mapped[str | None]
     product_lines: Mapped[str | None]

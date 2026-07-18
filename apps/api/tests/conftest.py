@@ -74,7 +74,7 @@ from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
 
 # Safe to import now: DATABASE_URL is already pinned to the test DB.
 from app.db.session import engine as app_engine  # noqa: E402
-from app.deps import get_invite_email_provider, get_otp_provider  # noqa: E402
+from app.deps import get_contact_email_provider, get_invite_email_provider, get_otp_provider  # noqa: E402
 from app.main import app  # noqa: E402
 
 ADMIN_DATABASE_URL = "postgresql+psycopg://dashr:dashr@localhost:5432/postgres"
@@ -206,8 +206,31 @@ def fake_invite_email_provider() -> FakeInviteEmailProvider:
     return FakeInviteEmailProvider()
 
 
+class FakeContactEmailProvider:
+    """Captures contact-form enquiries instead of sending real email.
+
+    `send(name, phone_no, email, query)` matches the `ContactEmailProvider`
+    protocol `services/contact_email_provider.py` defines.
+    """
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, str, str, str]] = []
+
+    def send(self, name: str, phone_no: str, email: str, query: str) -> None:
+        self.sent.append((name, phone_no, email, query))
+
+
 @pytest.fixture
-def client(fake_otp_provider: FakeOtpProvider, fake_invite_email_provider: FakeInviteEmailProvider):
+def fake_contact_email_provider() -> FakeContactEmailProvider:
+    return FakeContactEmailProvider()
+
+
+@pytest.fixture
+def client(
+    fake_otp_provider: FakeOtpProvider,
+    fake_invite_email_provider: FakeInviteEmailProvider,
+    fake_contact_email_provider: FakeContactEmailProvider,
+):
     """A fresh TestClient per test, with the OTP and invite-email providers mocked.
 
     Never hits a real SMS/OTP API or sends real email — both providers are
@@ -216,10 +239,12 @@ def client(fake_otp_provider: FakeOtpProvider, fake_invite_email_provider: FakeI
     """
     app.dependency_overrides[get_otp_provider] = lambda: fake_otp_provider
     app.dependency_overrides[get_invite_email_provider] = lambda: fake_invite_email_provider
+    app.dependency_overrides[get_contact_email_provider] = lambda: fake_contact_email_provider
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.pop(get_otp_provider, None)
     app.dependency_overrides.pop(get_invite_email_provider, None)
+    app.dependency_overrides.pop(get_contact_email_provider, None)
 
 
 # --------------------------------------------------------------------------

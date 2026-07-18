@@ -190,32 +190,17 @@ export default function HomePage() {
           <DashrLogo onClick={() => router.push("/")} height={28} />
           <div className="flex items-center gap-6 text-sm text-black/45">
             <button
-              onClick={() => router.push("/product")}
+              onClick={() => router.push("/privacy-policy")}
               className="hover:text-black transition-colors"
             >
-              Product
+              Privacy Policy
             </button>
             <button
-              onClick={() => router.push("/faq")}
+              onClick={() => router.push("/terms-of-use")}
               className="hover:text-black transition-colors"
             >
-              FAQ
+              Terms of Use
             </button>
-            <span className="hover:text-black transition-colors cursor-pointer">
-              Pricing
-            </span>
-            <button
-              onClick={() => router.push("/login")}
-              className="hover:text-black transition-colors"
-            >
-              Login
-            </button>
-            <a
-              href="mailto:hello@dashr.ai"
-              className="hover:text-black transition-colors"
-            >
-              hello@dashr.ai
-            </a>
           </div>
           <span className="text-xs text-black/25">© 2024 DASHR AI. All rights reserved.</span>
         </div>

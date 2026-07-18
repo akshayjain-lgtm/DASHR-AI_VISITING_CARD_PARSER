@@ -4,12 +4,15 @@
 //   - `/faq` is a public, static page: no auth check, no data fetching,
 //     content grouped into categories, each question expands/collapses its
 //     answer independently.
-//   - The homepage navbar and footer both carry a working "FAQ" link.
+//   - The public Navbar carries a working "FAQ" link (alongside Home,
+//     Pricing, Contact Us, and Login/Try Demo). The homepage footer no
+//     longer duplicates FAQ/Pricing/Login — it only carries Privacy Policy
+//     and Terms of Use.
 //   - The authenticated app's Sidebar carries its own top-level "FAQ" nav
 //     item, alongside Wallet and Settings — not nested inside Settings.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import FaqPage from "@/app/(marketing)/faq/page";
 import HomePage from "@/app/page";
@@ -112,13 +115,23 @@ describe("FAQ entry points on public pages", () => {
     expect(pushMock).toHaveBeenCalledWith("/faq");
   });
 
-  it("homepage footer FAQ link routes to /faq", async () => {
+  it("homepage footer no longer duplicates FAQ/Pricing/Login, only Privacy Policy and Terms of Use", async () => {
     const user = userEvent.setup();
     render(<HomePage />);
 
-    const faqLinks = screen.getAllByRole("button", { name: "FAQ" });
-    await user.click(faqLinks[faqLinks.length - 1]);
-    expect(pushMock).toHaveBeenCalledWith("/faq");
+    const footer = screen.getByRole("contentinfo");
+    // Exactly one "FAQ" button exists on the page (the navbar's) — the
+    // footer must not render a second one.
+    expect(screen.getAllByRole("button", { name: "FAQ" })).toHaveLength(1);
+    expect(within(footer).queryByRole("button", { name: "Pricing" })).not.toBeInTheDocument();
+    expect(within(footer).queryByRole("button", { name: "Login" })).not.toBeInTheDocument();
+    expect(within(footer).queryByText("info@dashrtech.com")).not.toBeInTheDocument();
+
+    await user.click(within(footer).getByRole("button", { name: "Privacy Policy" }));
+    expect(pushMock).toHaveBeenCalledWith("/privacy-policy");
+
+    await user.click(within(footer).getByRole("button", { name: "Terms of Use" }));
+    expect(pushMock).toHaveBeenCalledWith("/terms-of-use");
   });
 });
 
