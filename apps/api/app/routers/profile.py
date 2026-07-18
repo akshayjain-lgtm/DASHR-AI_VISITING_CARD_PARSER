@@ -15,7 +15,12 @@ def get_profile(
     user: User = Depends(get_current_user),
 ):
     profile = profile_service.get_or_empty_profile(db, user)
-    return SellerProfileOut.model_validate(profile)
+    # `name` isn't a seller_profiles column (see SellerProfileOut docstring)
+    # — it's filled in from the current user separately from the
+    # SellerProfile row, so it's populated even before a profile is ever
+    # saved.
+    out = SellerProfileOut.model_validate(profile)
+    return out.model_copy(update={"name": user.name})
 
 
 @router.put("", response_model=SellerProfileOut)
@@ -25,4 +30,5 @@ def update_profile(
     user: User = Depends(get_current_user),
 ):
     profile = profile_service.upsert_profile(db, user, data)
-    return SellerProfileOut.model_validate(profile)
+    out = SellerProfileOut.model_validate(profile)
+    return out.model_copy(update={"name": user.name})

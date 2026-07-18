@@ -31,6 +31,8 @@ from app.models.seller_profile import SellerProfile
 from conftest import create_verified_user
 
 FULL_PROFILE_PAYLOAD = {
+    "name": "Priya Sharma Verma",
+    "designation": "VP Sales",
     "company_name": "Thermax Limited",
     "industry": "Process Equipment & Heat Exchangers",
     "product_lines": "Industrial boilers, heat recovery systems, absorption chillers",
@@ -45,6 +47,7 @@ FULL_PROFILE_PAYLOAD = {
 }
 
 PROFILE_OUT_FIELDS = [
+    "designation",
     "company_name",
     "industry",
     "product_lines",
@@ -87,6 +90,12 @@ def test_get_profile_never_saved_returns_200_with_all_nulls(client, fake_otp_pro
     assert body["profile_id"] is None, "an unsaved profile must have a null profile_id, not a 404"
     for field in PROFILE_OUT_FIELDS:
         assert body[field] is None, f"{field} must be null for a never-saved profile"
+    # name is the one exception: it's sourced from User.name (set at
+    # signup), not a seller_profiles column, so it's already populated even
+    # before any profile row exists.
+    assert body["name"] == "Priya Sharma", (
+        "name must reflect the account's signup name even for a never-saved profile"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -102,6 +111,8 @@ def test_put_profile_first_save_creates_exactly_one_row(client, fake_otp_provide
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["profile_id"] is not None, "a saved profile must return a non-null profile_id"
+    assert body["name"] == FULL_PROFILE_PAYLOAD["name"]
+    assert body["designation"] == FULL_PROFILE_PAYLOAD["designation"]
     assert body["company_name"] == FULL_PROFILE_PAYLOAD["company_name"]
     assert body["industry"] == FULL_PROFILE_PAYLOAD["industry"]
     assert body["product_lines"] == FULL_PROFILE_PAYLOAD["product_lines"]
@@ -136,6 +147,7 @@ def test_get_profile_after_save_returns_saved_values(client, fake_otp_provider):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["profile_id"] == put_resp.json()["profile_id"]
+    assert body["name"] == FULL_PROFILE_PAYLOAD["name"]
     for field in PROFILE_OUT_FIELDS:
         if field == "last_year_revenue":
             assert float(body[field]) == float(FULL_PROFILE_PAYLOAD[field])
@@ -330,6 +342,10 @@ def test_put_profile_partial_update_single_field_leaves_all_other_fields_unchang
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["industry"] == "Renewable Energy Equipment"
+    assert body["name"] == FULL_PROFILE_PAYLOAD["name"], (
+        "name must be unaffected by a PUT that only sets industry, same as every "
+        "other omitted field"
+    )
     for field in PROFILE_OUT_FIELDS:
         if field == "industry":
             continue
@@ -501,3 +517,78 @@ def test_put_profile_empty_string_clears_previously_saved_gst_no_and_billing_add
     assert get_resp.status_code == 200, get_resp.text
     assert get_resp.json()["gst_no"] == ""
     assert get_resp.json()["billing_address"] == ""
+
+
+# --------------------------------------------------------------------------
+# 14. `name` writes through to User.name (a single shared field, not a
+#     separate seller_profiles column) and, unlike gst_no/billing_address,
+#     is never blankable — the account must always have a name.
+# --------------------------------------------------------------------------
+
+
+def test_put_profile_name_updates_the_same_name_returned_by_auth_me(client, fake_otp_provider):
+    create_verified_user(client, fake_otp_provider)
+    assert client.get("/auth/me").json()["name"] == "Priya Sharma", "sanity check on the signup name"
+
+    resp = client.put("/profile", json={"name": "Priya Sharma Verma"})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["name"] == "Priya Sharma Verma"
+
+    # Proves this is the *same* underlying field as the account's own name,
+    # not a second, independent one that happens to start out equal.
+    me_resp = client.get("/auth/me")
+    assert me_resp.status_code == 200, me_resp.text
+    assert me_resp.json()["name"] == "Priya Sharma Verma"
+
+
+def test_put_profile_empty_string_name_is_rejected_with_422(client, fake_otp_provider):
+    create_verified_user(client, fake_otp_provider)
+
+    resp = client.put("/profile", json={"name": ""})
+
+    assert resp.status_code == 422, (
+        "unlike gst_no/billing_address, name must never be blankable — the account "
+        f"must always have a name, got {resp.status_code}: {resp.text}"
+    )
+    assert client.get("/auth/me").json()["name"] == "Priya Sharma", (
+        "a rejected PUT must leave the existing name untouched"
+    )
+
+
+def test_put_profile_omitting_designation_key_still_succeeds(client, fake_otp_provider):
+    """"Mandatory" is enforced by the Settings form (blocks Save on a blank
+    field), not by requiring the key on every request — the API keeps its
+    exclude_unset partial-update contract, same as every other field."""
+    create_verified_user(client, fake_otp_provider)
+    payload = {k: v for k, v in FULL_PROFILE_PAYLOAD.items() if k != "designation"}
+
+    resp = client.put("/profile", json=payload)
+
+    assert resp.status_code == 200, (
+        f"omitting the designation key from a PUT body must still succeed, "
+        f"got {resp.status_code}: {resp.text}"
+    )
+    assert resp.json()["designation"] is None
+
+    get_resp = client.get("/profile")
+    assert get_resp.status_code == 200, get_resp.text
+    assert get_resp.json()["designation"] is None
+
+
+def test_put_profile_empty_string_designation_is_rejected_with_422(client, fake_otp_provider):
+    create_verified_user(client, fake_otp_provider)
+    first = client.put("/profile", json=FULL_PROFILE_PAYLOAD)
+    assert first.status_code == 200, first.text
+
+    resp = client.put("/profile", json={"designation": ""})
+
+    assert resp.status_code == 422, (
+        "designation is mandatory — unlike gst_no/billing_address, it must never be "
+        f"blankable via an empty string, got {resp.status_code}: {resp.text}"
+    )
+    get_resp = client.get("/profile")
+    assert get_resp.status_code == 200, get_resp.text
+    assert get_resp.json()["designation"] == FULL_PROFILE_PAYLOAD["designation"], (
+        "a rejected PUT must leave the existing designation untouched"
+    )

@@ -122,7 +122,7 @@ dashr-ai/
 
 - **Organization** — the tenant; every other table carries an `org_id` for tenant-isolation/data-visibility purposes, even where (as with Wallet/Invoice below) it is not the billing scope
 - **User** — belongs to one Organization, with a role of `admin` or `sub_user`
-- **SellerProfile** — the signed-up seller's own company/product profile (company name, industry, product lines, revenue, target customer/regions), one row per User (1:1, unique `user_id`), used to calibrate lead scoring; also carries that User's GST No. and Billing Address (both optional, never required), used as the billing party on that user's Invoices when present
+- **SellerProfile** — the signed-up seller's own company/product profile (company name, industry, product lines, revenue, target customer/regions), one row per User (1:1, unique `user_id`), used to calibrate lead scoring; also carries that User's GST No. and Billing Address (both optional, never required), used as the billing party on that user's Invoices when present, and an optional Role/Designation (e.g. job title) for that User. The Company Profile UI also collects a "Name" field, but that writes through to `User.name` itself, not a separate SellerProfile column — one shared name, not two fields that could drift apart
 - **Exhibition** — a trade show/batch upload event (name, date, location)
 - **Card** — one scanned image + raw OCR output + extraction confidence
 - **Contact** — normalized person fields parsed from a Card (name, title, email, phone)

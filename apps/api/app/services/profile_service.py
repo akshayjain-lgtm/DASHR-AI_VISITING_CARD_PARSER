@@ -31,10 +31,21 @@ def upsert_profile(db: Session, current_user: User, data: SellerProfileUpdate) -
         profile = SellerProfile(user_id=current_user.user_id)
         db.add(profile)
 
-    # Relies on SellerProfileUpdate's field names matching SellerProfile's
-    # column names 1:1 — there's no compile-time check of that, so a renamed
-    # column or schema field must be renamed in both places together.
-    for field, value in data.model_dump(exclude_unset=True).items():
+    # `name` is the one SellerProfileUpdate field that isn't a
+    # seller_profiles column — it writes through to User.name so the
+    # profile form and the account's own name stay a single field, not two
+    # that can drift apart. Schema-level min_length=1 already guarantees
+    # this is never an empty-string clear.
+    fields = data.model_dump(exclude_unset=True)
+    name = fields.pop("name", None)
+    if name is not None:
+        current_user.name = name
+
+    # Relies on SellerProfileUpdate's remaining field names matching
+    # SellerProfile's column names 1:1 — there's no compile-time check of
+    # that, so a renamed column or schema field must be renamed in both
+    # places together.
+    for field, value in fields.items():
         setattr(profile, field, value)
 
     db.commit()
