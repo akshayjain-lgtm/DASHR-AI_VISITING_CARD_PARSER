@@ -52,6 +52,9 @@ dashr-ai/
 ├── packages/
 │   └── shared-types/             # OpenAPI-generated TS types shared by web ↔ api (↔ mobile later)
 │
+├── assets/
+│   └── brand/                    # Canonical DASHR logo (vector) — single source for both the web frontend and invoice PDF header
+│
 ├── infra/
 │   ├── docker-compose.yml        # Local dev: web, api, worker, postgres, redis
 │   └── migrations/
@@ -67,6 +70,7 @@ dashr-ai/
 - Per-action pricing (parse/enrich/score rates) → `apps/api/app/services/billing.py`, kept as configurable data, not hardcoded branches — same principle as scoring weights, since prices will change and may eventually vary per-org
 - Razorpay order creation, signature verification, and webhook handling → `apps/api/app/services/payments.py` + `apps/api/app/routers/payments` only; never verify payment status from a client-side callback alone
 - Marketing/static pages (privacy policy, terms of use) → `apps/web/app/(marketing)/`, publicly accessible, no auth required
+- The DASHR logo (vector) → `assets/brand/`, the single canonical copy; both `apps/web` (site chrome) and `apps/api` (invoice PDF header) read from it rather than keeping separate copies
 
 ---
 
@@ -85,7 +89,7 @@ dashr-ai/
 | Auth | Org-based multi-tenant auth (Auth.js/NextAuth or Clerk) with an admin/sub-user role per User, JWT passed to FastAPI | B2B SaaS — every request is scoped to an organization for data visibility, but billing is scoped to the individual user, not the org |
 | Payments | Razorpay (Orders API for wallet recharge; webhooks for confirmation; e-mandates for the later UPI AutoPay phase) | Native support for Indian Netbanking/UPI/Debit/Credit Card and UPI AutoPay in one provider; standard choice for Indian B2B SaaS |
 | Wallet/billing ledger | Append-only ledger table in Postgres (SQLAlchemy), org-scoped | Money-bearing balances must be auditable and reconstructable from history, not just a mutable balance column |
-| Invoicing | Server-generated PDF/HTML invoice per wallet recharge, single line item "Visiting Card Recharge and Scoring", stored in object storage, linked from Postgres | Sellers need a durable, re-viewable record per recharge, not per individual/bulk parse action; never regenerate an invoice's contents after issue |
+| Invoicing | Server-generated PDF invoice per wallet recharge, single line item "Visiting Card Recharge and Scoring", stored in object storage, linked from Postgres, surfaced to the user via a new Orders section under Settings | Sellers need a durable, re-viewable record per recharge, not per individual/bulk parse action; never regenerate an invoice's contents after issue |
 | Analytics/charts | Recharts (pairs with shadcn/ui) on the dashboard page | Lead-type/industry/score breakdowns need charts, not just tables; keep it in the same design system as the rest of the UI |
 | Infra | Docker Compose (local), containers on AWS/GCP (prod) | Standard, portable, no vendor lock-in for a small early-stage service |
 | CI/CD | GitHub Actions | Matches the existing GitHub-hosted repo and installed GitHub plugin |
@@ -97,6 +101,7 @@ dashr-ai/
 - What was the "leads page" is the **Dashboard** page: a pure analytics surface — a stat band (total/high-fit/low-fit leads) at the top, a filter bar (exhibition + time range) scoping every chart identically, and charts on lead volume, industry mix, score distribution, exhibition performance, role mix, and region mix below. Row-by-row lead review/drill-down lives on `/upload`, not `/dashboard` — the two pages don't duplicate that surface
 - The homepage carries public **Privacy Policy** and **Terms of Use** sections/pages — static content, no auth, served from `apps/web/app/(marketing)/`
 - The **profile page** collects each User's GST No. and Billing Address as optional fields on their `SellerProfile` row (in addition to the standard company/product fields) — captured per-User (via the 1:1 `SellerProfile`), not a single org-wide setting, since billing is per-user. Neither is mandatory, at profile-save time or for Invoice generation — an Invoice is issued whether or not either is populated, carrying whatever value (including blank) the `SellerProfile` row holds at issue time
+- **Settings** gains a new **Orders** section listing every Invoice issued to the current user (one row per Wallet recharge), each with a PDF download — this is the only surface where a user views/downloads their invoices; a spec for this section is coming separately
 
 ---
 
@@ -133,7 +138,10 @@ dashr-ai/
 - **FreeActionAllowance** — a per-User, per-action-type usage counter (parse/enrich/score, each capped at 20 free actions at launch) tracked independently of the Wallet; increments on every parse/enrich/score by that user regardless of whether it was free or wallet-debited, and gates the point at which that action type starts debiting the wallet
 - **WalletTransaction** — append-only ledger entry (recharge credit, parse/enrichment/scoring debit, or support-initiated adjustment), scoped to one User; never updated or deleted, only inserted. Carries a `quantity` (default 1): a single-card parse/enrich/score debit is quantity 1 with that card as `reference_id`; a bulk batch is billed as one row with `quantity` = however many cards in the batch were actually charged, `reference_id` NULL (no single card to point at)
 - **Corrections and their knock-on effects are never separately billed.** Correcting the IndiaMART URL re-fetches that company's `indiamart_*` fields for free, regardless of free-allowance/wallet state — it's fixing a mistake in an already-paid-for enrichment, not a new billable action. Likewise, once a Card has been scored, correcting any field on it unlocks exactly one free rescore (`VisitingCard.lead_score`/`score_breakdown`/`scored_at` recomputed) — also never billed, never counted against the free allowance — until the next correction unlocks another one. A rescore is only offered while at least one `FieldCorrection` postdates the card's current `scored_at`; with no such correction, scoring stays one-shot exactly as before
-- **Invoice** — generated per Wallet recharge (never per card parsed or per batch), scoped to the User who made the recharge, references the recharge WalletTransaction it covers, carries a single service line item titled "Visiting Card Recharge and Scoring"; immutable once issued
+- **Invoice** — generated per Wallet recharge (never per card parsed or per batch), scoped to the User who made the recharge, references the recharge WalletTransaction it covers, carries a single service line item titled "Cardex Recharge - For Visiting Card Parsing,Enrichment and Scoring"; immutable once issued. Rendered as a PDF (with the DASHR logo from `assets/brand/`) and listed in the Orders section under Settings. The bill-to party (customer name, GST No., Billing Address) is sourced from that User's `SellerProfile`/`User.name` at issue time; the issuer/seller-of-record side is fixed platform-wide data, not per-user:
+  - **Name:** DASHR Material Handling Solutions (OPC) Private Limited
+  - **GST:** 06AAMCD5859M1ZX
+  - **Address:** 1185P, Near Arora Properties, Sector 46, Gurugram, Haryana 122001, India
 - **PricingRate** — configurable per-action rate (parse/enrichment/scoring, currently ₹5/₹3/₹2), versioned so historical invoices remain correct if rates change later
 
 ---
