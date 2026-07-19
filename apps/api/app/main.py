@@ -10,6 +10,7 @@ from app.routers.auth import router as auth_router
 from app.routers.cards import router as cards_router
 from app.routers.contact import router as contact_router
 from app.routers.exhibitions import router as exhibitions_router
+from app.routers.invoices import router as invoices_router
 from app.routers.orgs import router as orgs_router
 from app.routers.payments import router as payments_router
 from app.routers.profile import router as profile_router
@@ -35,6 +36,7 @@ app.include_router(auth_router)
 app.include_router(cards_router)
 app.include_router(contact_router)
 app.include_router(exhibitions_router)
+app.include_router(invoices_router)
 app.include_router(orgs_router)
 app.include_router(payments_router)
 app.include_router(profile_router)

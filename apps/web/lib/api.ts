@@ -555,7 +555,13 @@ export type WalletOut = {
 export type WalletRechargeOut = {
   razorpay_order_id: string;
   razorpay_key_id: string;
-  amount_inr: string;
+  // Pre-tax amount that will be credited to the wallet on capture.
+  net_amount_inr: string;
+  cgst_amount_inr: string;
+  sgst_amount_inr: string;
+  // What the Razorpay Order actually charges (net + 18% GST) — pass this
+  // (in paise) as the checkout widget's `amount`, not net_amount_inr.
+  gross_amount_inr: string;
   currency: "INR";
 };
 
@@ -578,6 +584,78 @@ export function createWalletRecharge(amountInr: string): Promise<WalletRechargeO
     method: "POST",
     body: JSON.stringify({ amount_inr: amountInr }),
   });
+}
+
+export type InvoiceOut = {
+  invoice_id: string;
+  user_id: string;
+  org_id: string | null;
+  wallet_transaction_id: string;
+  invoice_number: string;
+  sac_code: string;
+  // Pydantic v2 serializes Decimal to a JSON string, not a number.
+  taxable_value_inr: string;
+  cgst_rate_percent: string;
+  sgst_rate_percent: string;
+  cgst_amount_inr: string;
+  sgst_amount_inr: string;
+  total_inr: string;
+  currency: "INR";
+  service_description: string;
+  bill_to_name: string;
+  bill_to_gst_no: string | null;
+  bill_to_billing_address: string | null;
+  issuer_name: string;
+  issuer_gst_no: string;
+  issuer_address: string;
+  terms_and_conditions: string;
+  issued_at: string;
+};
+
+export function listInvoices(
+  params: { limit?: number; offset?: number } = {}
+): Promise<InvoiceOut[]> {
+  const query = new URLSearchParams();
+  if (params.limit != null) query.set("limit", String(params.limit));
+  if (params.offset != null) query.set("offset", String(params.offset));
+  const qs = query.toString();
+  return request(`/invoices${qs ? `?${qs}` : ""}`);
+}
+
+// Admin-only, org-wide — not currently called from any page in this
+// codebase (no admin invoice-review UI exists yet); included since the
+// backend endpoint is part of the documented API contract.
+export function listOrgInvoices(
+  params: { limit?: number; offset?: number } = {}
+): Promise<InvoiceOut[]> {
+  const query = new URLSearchParams();
+  if (params.limit != null) query.set("limit", String(params.limit));
+  if (params.offset != null) query.set("offset", String(params.offset));
+  const qs = query.toString();
+  return request(`/invoices/org${qs ? `?${qs}` : ""}`);
+}
+
+// Dedicated-fetch blob-download pattern, mirroring exportCards — the
+// generic request() helper always expects a JSON body, which a PDF isn't.
+export async function downloadInvoicePdf(invoiceId: string, invoiceNumber: string): Promise<void> {
+  const res = await fetch(`${API_URL}/invoices/${invoiceId}/pdf`, {
+    credentials: "include",
+  });
+
+  if (!res.ok) {
+    const { body, bodyWasJson } = await parseErrorBody(res);
+    throw new ApiError(res.status, extractErrorMessage(body, bodyWasJson));
+  }
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${invoiceNumber}.pdf`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 export function listCards(

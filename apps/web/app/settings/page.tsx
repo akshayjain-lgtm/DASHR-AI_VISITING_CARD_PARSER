@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Users, Mail, ShieldCheck, UserX, UserCheck, Zap, CheckCircle, Building2, LogOut } from "lucide-react";
+import { Users, Mail, ShieldCheck, UserX, UserCheck, Zap, CheckCircle, Building2, LogOut, Receipt, Download } from "lucide-react";
 import { Sidebar } from "@/components/sidebar";
 import { OBtn, GBtn } from "@/components/buttons";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -20,16 +20,20 @@ import {
   getProfile,
   updateProfile,
   logout,
+  listInvoices,
+  downloadInvoicePdf,
   type UserOut,
   type InviteOut,
   type OrgMemberOut,
   type MyInviteOut,
   type SellerProfileOut,
+  type InvoiceOut,
 } from "@/lib/api";
 
 const TABS = [
   { id: "profile", label: "Company Profile", icon: Building2 },
   { id: "roles", label: "Roles and Access", icon: ShieldCheck },
+  { id: "orders", label: "Orders", icon: Receipt },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -586,6 +590,86 @@ function RolesAccessTab() {
   );
 }
 
+function OrdersTab() {
+  const [invoices, setInvoices] = useState<InvoiceOut[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    listInvoices()
+      .then((data) => {
+        if (!cancelled) setInvoices(data);
+      })
+      .catch(() => {
+        if (!cancelled) setError("Couldn't load your invoices. Try refreshing the page.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function handleDownload(invoice: InvoiceOut) {
+    setDownloadingId(invoice.invoice_id);
+    setError(null);
+    try {
+      await downloadInvoicePdf(invoice.invoice_id, invoice.invoice_number);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Couldn't download the invoice. Try again.");
+    } finally {
+      setDownloadingId(null);
+    }
+  }
+
+  return (
+    <div className="max-w-3xl">
+      {error && <p className="text-sm text-red-600 mb-4">{error}</p>}
+
+      <div className="border border-black/10 overflow-hidden">
+        <div className="grid grid-cols-[1fr_1fr_1fr_auto] gap-4 bg-[#fafafa] border-b border-black/8 px-5 py-3 text-[11px] font-black uppercase tracking-wider text-black/35 items-center">
+          <div>Date Issued</div>
+          <div>Invoice #</div>
+          <div>Amount</div>
+          <div></div>
+        </div>
+        {invoices.length === 0 ? (
+          <div className="px-5 py-10 text-center text-sm text-black/30">
+            {loading ? "Loading…" : "No invoices yet."}
+          </div>
+        ) : (
+          invoices.map((invoice) => (
+            <div
+              key={invoice.invoice_id}
+              className="grid grid-cols-[1fr_1fr_1fr_auto] gap-4 px-5 py-4 border-b border-black/5 text-sm items-center"
+            >
+              <div className="text-black/60">
+                {new Date(invoice.issued_at).toLocaleDateString("en-IN")}
+              </div>
+              <div className="font-bold">{invoice.invoice_number}</div>
+              <div>
+                {"₹"}
+                {parseFloat(invoice.total_inr).toLocaleString("en-IN")}
+              </div>
+              <button
+                onClick={() => handleDownload(invoice)}
+                disabled={downloadingId === invoice.invoice_id}
+                className="flex items-center gap-1.5 text-sm font-bold text-[#E65527] hover:text-[#cf4a1f] transition-colors disabled:opacity-50"
+              >
+                <Download size={14} />
+                {downloadingId === invoice.invoice_id ? "Downloading…" : "Download PDF"}
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const [tab, setTab] = useState<TabId>("profile");
 
@@ -636,7 +720,13 @@ export default function SettingsPage() {
           </button>
         </div>
 
-        {tab === "profile" ? <CompanyProfileTab /> : <RolesAccessTab />}
+        {tab === "profile" ? (
+          <CompanyProfileTab />
+        ) : tab === "roles" ? (
+          <RolesAccessTab />
+        ) : (
+          <OrdersTab />
+        )}
       </main>
     </div>
   );

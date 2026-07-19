@@ -61,6 +61,7 @@ import hashlib
 import hmac
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 
 import pytest
@@ -121,6 +122,10 @@ class _FakeRazorpayOrders:
             "amount_due": data["amount"],
             "currency": data["currency"],
             "status": "created",
+            # Real Razorpay echoes notes back on the order object (and onto
+            # the resulting payment entity) — handle_payment_captured's
+            # order-record cross-check relies on this being present here.
+            "notes": data.get("notes", {}),
         }
         self._created = order
         return order
@@ -164,8 +169,15 @@ def _sign(payload: dict, secret: str = WEBHOOK_SECRET) -> tuple[bytes, str]:
 
 
 def _captured_payload(
-    order_id: str, payment_id: str, amount_paise: int, user_id: str
+    order_id: str,
+    payment_id: str,
+    amount_paise: int,
+    user_id: str,
+    net_amount_inr: str | None = None,
 ) -> dict:
+    notes: dict = {"user_id": user_id}
+    if net_amount_inr is not None:
+        notes["net_amount_inr"] = net_amount_inr
     return {
         "entity": "event",
         "event": "payment.captured",
@@ -177,7 +189,7 @@ def _captured_payload(
                     "amount": amount_paise,
                     "currency": "INR",
                     "status": "captured",
-                    "notes": {"user_id": user_id},
+                    "notes": notes,
                 }
             }
         },
@@ -200,16 +212,25 @@ def _recharge_and_credit(
 ) -> tuple[dict, dict]:
     """Full happy-path: mocked order creation via POST /wallet/recharge,
     then a validly-signed webhook crediting it. Returns (recharge_response_json,
-    webhook_response_json)."""
+    webhook_response_json).
+
+    amount_inr is the pre-tax amount requested/credited — the webhook's
+    captured amount is the GROSS (amount_inr + 18% GST) figure Razorpay
+    actually collects, per billing.compute_gst, mirroring exactly what
+    create_recharge_order/handle_payment_captured do in production."""
     _patch_razorpay_client(monkeypatch, order_id=order_id)
     _set_webhook_secret(monkeypatch)
 
     recharge_resp = client.post("/wallet/recharge", json={"amount_inr": amount_inr})
     assert recharge_resp.status_code == 200, recharge_resp.text
 
+    net = Decimal(amount_inr)
+    _cgst, _sgst, gross = billing.compute_gst(net)
     payment_id = f"pay_{uuid.uuid4().hex[:14]}"
-    amount_paise = int(Decimal(amount_inr) * 100)
-    payload = _captured_payload(order_id, payment_id, amount_paise, user["user_id"])
+    amount_paise = int(gross * 100)
+    payload = _captured_payload(
+        order_id, payment_id, amount_paise, user["user_id"], net_amount_inr=str(net)
+    )
     raw_body, signature = _sign(payload)
     webhook_resp = _post_webhook(client, payload, signature, raw_body)
     assert webhook_resp.status_code == 200, webhook_resp.text
@@ -280,11 +301,15 @@ def test_recharge_returns_order_and_does_not_change_balance(
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["razorpay_order_id"] == "order_abc123"
-    assert body["amount_inr"] == "500"
+    assert body["net_amount_inr"] == "500"
+    assert body["cgst_amount_inr"] == "45.00"
+    assert body["sgst_amount_inr"] == "45.00"
+    assert body["gross_amount_inr"] == "590.00"
     assert body["currency"] == "INR"
     assert "razorpay_key_id" in body
     assert len(fake_client.order.calls) == 1
-    assert fake_client.order.calls[0]["amount"] == 50000  # paise
+    assert fake_client.order.calls[0]["amount"] == 59000  # paise — gross = 500 * 1.18
+    assert fake_client.order.calls[0]["notes"]["net_amount_inr"] == "500"
 
     # Lazily created (balance_inr=0) by create_recharge_order, same as a
     # first GET /wallet call would — but never credited by this endpoint.
@@ -345,8 +370,11 @@ def test_redelivered_webhook_does_not_double_credit(
     recharge_resp = client.post("/wallet/recharge", json={"amount_inr": "250"})
     assert recharge_resp.status_code == 200, recharge_resp.text
 
+    net = Decimal("250")
+    _cgst, _sgst, gross = billing.compute_gst(net)
     payload = _captured_payload(
-        "order_redelivered", "pay_redelivered_1", 25000, user["user_id"]
+        "order_redelivered", "pay_redelivered_1", int(gross * 100), user["user_id"],
+        net_amount_inr=str(net),
     )
     raw_body, signature = _sign(payload)
 
@@ -450,6 +478,36 @@ def test_webhook_captured_event_missing_required_field_returns_400(
     assert db_session.scalar(select(WalletTransaction)) is None
 
 
+def test_webhook_captured_event_missing_net_amount_inr_returns_400(
+    client: TestClient, fake_otp_provider, monkeypatch: pytest.MonkeyPatch, db_session
+):
+    """notes.net_amount_inr is as required as notes.user_id since GST landed
+    — the wallet must never be credited the gross, tax-inclusive payment.amount
+    figure, so a payload with no pre-tax amount to credit is malformed, not a
+    legitimate no-op."""
+    user = _authenticated_user(client, fake_otp_provider)
+    _set_webhook_secret(monkeypatch)
+
+    payload = {
+        "entity": "event",
+        "event": "payment.captured",
+        "payload": {
+            "payment": {
+                "entity": {
+                    "id": "pay_no_net_amount",
+                    "order_id": "order_no_net_amount",
+                    "amount": 59000,
+                    "notes": {"user_id": user["user_id"]},  # net_amount_inr deliberately omitted
+                }
+            }
+        },
+    }
+    raw_body, signature = _sign(payload)
+    resp = _post_webhook(client, payload, signature, raw_body)
+    assert resp.status_code == 400, resp.text
+    assert db_session.scalar(select(WalletTransaction)) is None
+
+
 def test_webhook_unknown_order_id_is_a_no_op_not_a_credit(
     client: TestClient, fake_otp_provider, monkeypatch: pytest.MonkeyPatch, db_session
 ):
@@ -464,7 +522,8 @@ def test_webhook_unknown_order_id_is_a_no_op_not_a_credit(
     _set_webhook_secret(monkeypatch)
 
     payload = _captured_payload(
-        "order_never_created", "pay_for_fake_order", 100000, user["user_id"]
+        "order_never_created", "pay_for_fake_order", 100000, user["user_id"],
+        net_amount_inr="1000",
     )
     raw_body, signature = _sign(payload)
     resp = _post_webhook(client, payload, signature, raw_body)
@@ -605,3 +664,217 @@ def test_debit_wallet_raises_and_writes_nothing_when_balance_insufficient(
     wallet = db_session.scalar(select(Wallet).where(Wallet.user_id == uuid.UUID(user["user_id"])))
     assert wallet.balance_inr == Decimal("0")
     assert db_session.scalar(select(WalletTransaction)) is None
+
+
+# --------------------------------------------------------------------------
+# billing.compute_gst — the single source of GST math for both the
+# Razorpay charge and the invoice PDF (.claude/specs/21-invoicing.md).
+# --------------------------------------------------------------------------
+
+
+def test_compute_gst_splits_18_percent_evenly_as_cgst_and_sgst():
+    cgst, sgst, gross = billing.compute_gst(Decimal("1000"))
+    assert cgst == Decimal("90.00")
+    assert sgst == Decimal("90.00")
+    assert gross == Decimal("1180.00")
+
+
+def test_compute_gst_rounds_half_up_on_an_odd_amount():
+    # 133 * 0.09 = 11.97 exactly — no rounding ambiguity here, but confirms
+    # the two halves stay equal and sum correctly for a non-round amount.
+    cgst, sgst, gross = billing.compute_gst(Decimal("133"))
+    assert cgst == Decimal("11.97")
+    assert sgst == Decimal("11.97")
+    assert gross == Decimal("156.94")
+    assert cgst + sgst + Decimal("133") == gross
+
+
+def test_compute_gst_max_recharge_amount_does_not_misround():
+    cgst, sgst, gross = billing.compute_gst(Decimal("500000"))
+    assert cgst == Decimal("45000.00")
+    assert sgst == Decimal("45000.00")
+    assert gross == Decimal("590000.00")
+
+
+# --------------------------------------------------------------------------
+# Additional coverage merged in from the now-deleted test_14-wallet-recharge.py
+# (a separate, independently-written "blind, spec-first" suite that
+# overlapped heavily with the tests above but also covered a handful of
+# edge cases this file didn't). Ported here and made GST-aware rather than
+# maintaining two overlapping test files for the same feature.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "method, path, json_body",
+    [
+        ("get", "/wallet", None),
+        ("get", "/wallet/transactions", None),
+        ("post", "/wallet/recharge", {"amount_inr": "500"}),
+    ],
+)
+def test_wallet_endpoints_without_session_return_401(
+    client: TestClient, method: str, path: str, json_body: dict | None
+):
+    kwargs = {"json": json_body} if json_body is not None else {}
+    resp = getattr(client, method)(path, **kwargs)
+    assert resp.status_code == 401, f"{method.upper()} {path} without a session must return 401"
+
+
+def test_get_wallet_caps_transactions_at_most_recent_twenty(
+    client: TestClient, fake_otp_provider, monkeypatch: pytest.MonkeyPatch
+):
+    """Spec: 'response: WalletOut { ... transactions: WalletTransactionOut[]
+    (most recent 20) }'."""
+    user = _authenticated_user(client, fake_otp_provider)
+    order_ids = []
+    for i in range(22):
+        order_id = f"order_cap_{i}"
+        _recharge_and_credit(client, monkeypatch, user, "100", order_id=order_id)
+        order_ids.append(order_id)
+
+    wallet_resp = client.get("/wallet")
+    assert wallet_resp.status_code == 200, wallet_resp.text
+    body = wallet_resp.json()
+    assert body["balance_inr"] == "2200"
+    assert len(body["transactions"]) == 20, "GET /wallet must cap transactions at the 20 most recent"
+
+    returned_order_ids = [t["razorpay_order_id"] for t in body["transactions"]]
+    assert returned_order_ids == list(reversed(order_ids))[:20]
+
+
+@pytest.mark.parametrize("amount_inr", ["100", "500000", "250.50"])
+def test_recharge_amount_at_or_within_bounds_is_accepted(
+    client: TestClient, fake_otp_provider, monkeypatch: pytest.MonkeyPatch, amount_inr: str
+):
+    _authenticated_user(client, fake_otp_provider)
+    _patch_razorpay_client(monkeypatch)
+
+    resp = client.post("/wallet/recharge", json={"amount_inr": amount_inr})
+    assert resp.status_code == 200, f"amount_inr={amount_inr} is within bounds: {resp.text}"
+
+
+def test_recharge_missing_amount_returns_422(client: TestClient, fake_otp_provider):
+    _authenticated_user(client, fake_otp_provider)
+    resp = client.post("/wallet/recharge", json={})
+    assert resp.status_code == 422, resp.text
+
+
+def test_recharge_non_numeric_amount_returns_422(client: TestClient, fake_otp_provider):
+    _authenticated_user(client, fake_otp_provider)
+    resp = client.post("/wallet/recharge", json={"amount_inr": "not-a-number"})
+    assert resp.status_code == 422, resp.text
+
+
+def test_webhook_second_credit_stacks_on_top_of_first(
+    client: TestClient, fake_otp_provider, monkeypatch: pytest.MonkeyPatch, db_session
+):
+    user = _authenticated_user(client, fake_otp_provider)
+    _recharge_and_credit(client, monkeypatch, user, "500", order_id="order_stack_1")
+    _recharge_and_credit(client, monkeypatch, user, "300", order_id="order_stack_2")
+
+    wallet = db_session.scalar(select(Wallet).where(Wallet.user_id == uuid.UUID(user["user_id"])))
+    assert wallet.balance_inr == Decimal("800")
+
+    txns = db_session.scalars(
+        select(WalletTransaction)
+        .where(WalletTransaction.user_id == uuid.UUID(user["user_id"]))
+        .order_by(WalletTransaction.created_at)
+    ).all()
+    assert [t.amount_inr for t in txns] == [Decimal("500"), Decimal("300")]
+    assert [t.balance_after_inr for t in txns] == [Decimal("500"), Decimal("800")], (
+        "balance_after_inr on each row must be the running total, not a flat amount"
+    )
+
+
+def test_webhook_concurrent_identical_redelivery_credits_exactly_once(
+    client: TestClient, fake_otp_provider, monkeypatch: pytest.MonkeyPatch, db_session
+):
+    """Bonus race-safety check beyond the DoD's sequential re-post wording —
+    two threads posting the identical signed payload at the same time must
+    still credit exactly once, backstopped by the unique index on
+    razorpay_order_id."""
+    user = _authenticated_user(client, fake_otp_provider)
+    _patch_razorpay_client(monkeypatch, order_id="order_concurrent")
+    _set_webhook_secret(monkeypatch)
+
+    recharge_resp = client.post("/wallet/recharge", json={"amount_inr": "400"})
+    assert recharge_resp.status_code == 200, recharge_resp.text
+
+    net = Decimal("400")
+    _cgst, _sgst, gross = billing.compute_gst(net)
+    payload = _captured_payload(
+        "order_concurrent", "pay_concurrent_1", int(gross * 100), user["user_id"],
+        net_amount_inr=str(net),
+    )
+    raw_body, signature = _sign(payload)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(_post_webhook, client, payload, signature, raw_body) for _ in range(2)]
+        responses = [f.result() for f in futures]
+
+    for resp in responses:
+        assert resp.status_code < 500, f"a racing redelivery must never 500, got {resp.status_code}"
+
+    db_session.expire_all()
+    wallet = db_session.scalar(select(Wallet).where(Wallet.user_id == uuid.UUID(user["user_id"])))
+    assert wallet.balance_inr == Decimal("400")
+    txns = db_session.scalars(
+        select(WalletTransaction).where(WalletTransaction.user_id == uuid.UUID(user["user_id"]))
+    ).all()
+    assert len(txns) == 1
+
+
+def test_webhook_malformed_json_body_with_otherwise_valid_signature_returns_400(
+    client: TestClient, fake_otp_provider, monkeypatch: pytest.MonkeyPatch, db_session
+):
+    """Malformed webhook payloads must be rejected with 400 even when the
+    signature over those exact (malformed) bytes is valid — signature
+    verification and payload validity are independent checks."""
+    _authenticated_user(client, fake_otp_provider)
+    _set_webhook_secret(monkeypatch)
+
+    malformed_body = b"{not-valid-json---"
+    signature = hmac.new(WEBHOOK_SECRET.encode(), malformed_body, hashlib.sha256).hexdigest()
+
+    resp = _post_webhook(client, malformed_body, signature, malformed_body)
+    assert resp.status_code == 400, resp.text
+    assert db_session.scalar(select(WalletTransaction)) is None
+
+
+def test_list_transactions_limit_over_max_returns_422(client: TestClient, fake_otp_provider):
+    """Spec: 'query params limit (default 50, max 200) ...'."""
+    _authenticated_user(client, fake_otp_provider)
+    resp = client.get("/wallet/transactions", params={"limit": 201})
+    assert resp.status_code == 422, resp.text
+
+
+def test_list_transactions_empty_for_new_user(client: TestClient, fake_otp_provider):
+    _authenticated_user(client, fake_otp_provider)
+    resp = client.get("/wallet/transactions")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == []
+
+
+def test_webhook_credits_only_the_notes_identified_user_never_the_order_creator_by_accident(
+    client: TestClient, fake_otp_provider, monkeypatch: pytest.MonkeyPatch, db_session
+):
+    """Sanity check that crediting is keyed off the payload's identified
+    user (and net_amount_inr), not e.g. whichever wallet row was touched
+    most recently — two users recharge interleaved, and each webhook must
+    land on the correct wallet with the correct (pre-tax) amount."""
+    _patch_razorpay_client(monkeypatch, order_id="order_interleave")
+    _set_webhook_secret(monkeypatch)
+
+    user_a = _authenticated_user(client, fake_otp_provider)
+    with TestClient(fastapi_app) as client_b:
+        user_b = _authenticated_user(client_b, fake_otp_provider)
+        _recharge_and_credit(client_b, monkeypatch, user_b, "222", order_id="order_interleave_b")
+
+    _recharge_and_credit(client, monkeypatch, user_a, "111", order_id="order_interleave_a")
+
+    db_session.expire_all()
+    wallet_a = db_session.scalar(select(Wallet).where(Wallet.user_id == uuid.UUID(user_a["user_id"])))
+    wallet_b = db_session.scalar(select(Wallet).where(Wallet.user_id == uuid.UUID(user_b["user_id"])))
+    assert wallet_a.balance_inr == Decimal("111")
+    assert wallet_b.balance_inr == Decimal("222")

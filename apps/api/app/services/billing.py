@@ -9,7 +9,7 @@ tables in this codebase (CLAUDE.md: no shared org wallet, no admin spending
 authority over a sub-user's wallet).
 """
 import uuid
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -26,6 +26,34 @@ from app.services.exceptions import InsufficientBalanceError
 # truth so callers (routers/wallet.py's GET /wallet handler, in particular)
 # never hand-maintain their own copy of this list.
 ACTION_TYPES = ("parse", "enrichment", "scoring")
+
+# GST applied on top of every wallet recharge (never on parse/enrichment/
+# scoring debits) — 18% split evenly as CGST+SGST, billed intra-state per
+# DASHR's Haryana GSTIN regardless of the paying user's own state (a
+# documented simplification, not derived from Place-of-Supply rules; see
+# .claude/specs/21-invoicing.md). Configurable data, not hardcoded branches,
+# mirroring PricingRate/ACTION_TYPES above.
+CGST_RATE_PERCENT = Decimal("9.00")
+SGST_RATE_PERCENT = Decimal("9.00")
+SAC_CODE = "9983"
+
+
+def compute_gst(net_amount_inr: Decimal) -> tuple[Decimal, Decimal, Decimal]:
+    """Returns (cgst_amount_inr, sgst_amount_inr, gross_amount_inr) for a
+    pre-tax recharge amount. The ONLY place GST math happens —
+    payments.create_recharge_order (to decide how much Razorpay actually
+    charges) and invoicing.generate_invoice_for_transaction (to render the
+    breakdown on the PDF) both call this, so the two can never independently
+    round to different totals. Explicit ROUND_HALF_UP rather than the
+    ambient Decimal context's default rounding — this is real money, same
+    care every other Decimal computation in this file already takes."""
+    cgst = (net_amount_inr * CGST_RATE_PERCENT / 100).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    sgst = (net_amount_inr * SGST_RATE_PERCENT / 100).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    return cgst, sgst, net_amount_inr + cgst + sgst
 
 
 def _get_or_create_wallet(
