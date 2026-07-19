@@ -70,6 +70,7 @@ const baseCardFields = {
   created_at: "2026-07-01T00:00:00Z",
   score_breakdown: null,
   scored_at: null,
+  rescore_available: false,
 } as const;
 
 function makeCard(params: {

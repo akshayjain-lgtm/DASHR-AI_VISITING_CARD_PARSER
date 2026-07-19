@@ -67,6 +67,7 @@ const sampleCardDetail: CardDetailOut = {
   lead_score: null,
   score_breakdown: null,
   scored_at: null,
+  rescore_available: false,
   company: null,
   emails: [],
   phones: [],
@@ -175,14 +176,58 @@ describe("Card detail drawer scoring CTA", () => {
     await user.click(scoreButton);
 
     await waitFor(() => expect(scoreCallsSingle).toEqual(["card-1"]));
-    // No "Re-score Card" (or any other scoring) button ever appears once
-    // lead_score is set — scoring is one-shot, so the CTA is replaced by a
+    // No "Rescore Card" button appears once lead_score is set UNLESS a
+    // field was corrected since (rescore_available) — this fixture's
+    // post-score card has no correction, so the CTA is replaced by a
     // locked-state message instead.
     expect(await screen.findByText("72")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Score Card" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Re-score Card" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Rescore Card" })).not.toBeInTheDocument();
     expect(
-      screen.getByText("This card has already been scored — scoring is one-shot and can’t be repeated.")
+      screen.getByText("This card has already been scored — correct a field to unlock a free rescore.")
+    ).toBeInTheDocument();
+  });
+
+  it("shows a free Rescore Card button once a field has been corrected since the last score", async () => {
+    const user = userEvent.setup();
+    const scoredWithCorrection: CardDetailOut = {
+      ...sampleCardDetail,
+      status: "extracted",
+      lead_score: 72,
+      score_breakdown: {
+        designation_score: 14, company_size_score: 0, industry_fit_score: 0,
+        momentum_signal_score: 0, remark_signal_score: 3, total: 72, version: "v1",
+      },
+      scored_at: "2026-07-10T12:00:00Z",
+      rescore_available: true,
+    };
+    const rescoredCard: CardDetailOut = {
+      ...scoredWithCorrection,
+      scored_at: "2026-07-10T14:00:00Z",
+      rescore_available: false,
+    };
+    const { fetchMock, scoreCallsSingle } = createApiMock({
+      card: scoredWithCorrection,
+      cardAfterScore: rescoredCard,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<CardDetailDrawer cardId="card-1" onClose={vi.fn()} />);
+
+    const rescoreButton = await screen.findByRole("button", { name: "Rescore Card" });
+    expect(rescoreButton).not.toBeDisabled();
+    expect(
+      screen.getByText("You corrected a field since this card was scored — rescoring is free.")
+    ).toBeInTheDocument();
+
+    await user.click(rescoreButton);
+
+    await waitFor(() => expect(scoreCallsSingle).toEqual(["card-1"]));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Rescore Card" })).not.toBeInTheDocument()
+    );
+    expect(
+      screen.getByText("This card has already been scored — correct a field to unlock a free rescore.")
     ).toBeInTheDocument();
   });
 });
@@ -215,6 +260,7 @@ function makeUploadCard(params: {
     lead_score: params.lead_score,
     score_breakdown: null,
     scored_at: params.scored_at,
+    rescore_available: false,
   };
 }
 

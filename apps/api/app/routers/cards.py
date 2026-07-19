@@ -16,6 +16,7 @@ from app.schemas.cards import (
     CardEnrichRequest,
     CardEnrichResponse,
     CardExportRequest,
+    CardFieldCorrectionRequest,
     CardOut,
     CardProcessRequest,
     CardProcessResponse,
@@ -32,11 +33,15 @@ from app.services.exceptions import (
     CardNotFoundError,
     CardStateChangedError,
     CompanyNotEligibleForEnrichmentError,
+    CorrectionRateLimitedError,
     EmptyBatchError,
     ExhibitionNotFoundError,
+    FieldCorrectionRecordNotFoundError,
     FileTooLargeError,
     InsufficientBalanceError,
+    InvalidCorrectionValueError,
     InvalidReprocessStateError,
+    NoOpCorrectionError,
     UnsupportedFileTypeError,
 )
 
@@ -193,6 +198,35 @@ def get_card(
         detail = card_service.get_card_detail(db, user, card_id)
     except CardNotFoundError:
         raise HTTPException(status_code=404, detail="Card not found")
+    return CardDetailOut.model_validate(detail)
+
+
+@router.post("/{card_id}/corrections", response_model=CardDetailOut)
+def correct_card_field(
+    card_id: uuid.UUID,
+    body: CardFieldCorrectionRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    try:
+        detail = card_service.correct_card_field(
+            db, user, card_id, body.field_name, body.corrected_value, body.record_id
+        )
+    except CardNotFoundError:
+        raise HTTPException(status_code=404, detail="Card not found")
+    except FieldCorrectionRecordNotFoundError:
+        raise HTTPException(status_code=404, detail="Email/phone record not found on this card")
+    except InvalidCorrectionValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "Corrected value is invalid")
+    except NoOpCorrectionError:
+        raise HTTPException(status_code=400, detail="Corrected value must differ from the current value")
+    except CardHasNoCompanyError:
+        raise HTTPException(status_code=400, detail="This card has no linked company")
+    except CorrectionRateLimitedError:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many IndiaMART URL corrections — please wait a minute and try again",
+        )
     return CardDetailOut.model_validate(detail)
 
 

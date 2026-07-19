@@ -68,6 +68,35 @@ class CardNotFoundError(Exception):
     """Raised when a referenced card_id doesn't exist or isn't visible to the caller."""
 
 
+class InvalidCorrectionValueError(Exception):
+    """Raised when a corrected field value fails the same validator/normalizer
+    the extraction pipeline uses for that field type, or collides with an
+    existing sibling row on the same card (email/phone uniqueness)."""
+
+
+class FieldCorrectionRecordNotFoundError(Exception):
+    """Raised when a field-correction's record_id doesn't resolve to a
+    CardEmail/CardPhone row belonging to the target card."""
+
+
+class NoOpCorrectionError(Exception):
+    """Raised when a field correction's corrected_value is identical to the
+    field's current value — never written as a FieldCorrection row. Closes
+    an abuse loop: since no correction is billed, an identical resubmission
+    would otherwise be a free way to repeatedly unlock a rescore (any
+    field) or re-trigger a paid Apify re-fetch (catalog_url) for zero
+    actual change."""
+
+
+class CorrectionRateLimitedError(Exception):
+    """Raised when a catalog_url correction is attempted before the
+    per-user cooldown since that user's last catalog_url correction has
+    elapsed. catalog_url corrections trigger a real, paid Apify re-fetch
+    and (unlike every other correction) are never billed, so nothing else
+    naturally throttles a tight request loop — this is a cheap, non-billing
+    anti-abuse guard, not a comprehensive rate limiter."""
+
+
 class InvalidReprocessStateError(Exception):
     """Raised when POST /cards/{card_id}/reprocess is called on a card whose status isn't 'failed'."""
 

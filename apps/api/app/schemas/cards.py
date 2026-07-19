@@ -1,7 +1,8 @@
 import uuid
 from datetime import date, datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.core.config import settings
 
@@ -53,6 +54,13 @@ class CardOut(BaseModel):
     # momentum_signal_score, remark_signal_score, total, version}; null until scored
     score_breakdown: dict[str, int | str] | None
     scored_at: datetime | None
+    # True when a field was corrected after this card's last score, meaning
+    # a free rescore is allowed (see .claude/specs/20-field-correction.md's
+    # billing amendment). Defaults False since list_cards' joined query
+    # deliberately doesn't compute this per-row (would fan out into one
+    # extra query per card on every page load) — only to_card_out/
+    # get_card_detail's single-card paths ever set it to a real value.
+    rescore_available: bool = False
 
 
 class CardCompanyOut(BaseModel):
@@ -97,6 +105,7 @@ class CardCompanyOut(BaseModel):
 class CardEmailOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    email_id: uuid.UUID
     email: str | None
     email_type: str | None
     is_primary: bool
@@ -105,6 +114,7 @@ class CardEmailOut(BaseModel):
 class CardPhoneOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    phone_id: uuid.UUID
     phone_e164: str | None
     phone_raw: str | None
     phone_type: str | None
@@ -136,6 +146,9 @@ class CardDetailOut(BaseModel):
     lead_score: float | None
     score_breakdown: dict[str, int | str] | None
     scored_at: datetime | None
+    # True when a field was corrected after this card's last score — a free
+    # rescore is allowed (see .claude/specs/20-field-correction.md).
+    rescore_available: bool = False
     company: CardCompanyOut | None
     emails: list[CardEmailOut]
     phones: list[CardPhoneOut]
@@ -229,3 +242,30 @@ class CardBulkDeleteResponse(BaseModel):
     # batch, mirroring enqueue_enrichment/enqueue_scoring's best-effort
     # contract over a client-picked selection.
     skipped_count: int
+
+
+class CardFieldCorrectionRequest(BaseModel):
+    field_name: Literal[
+        "full_name",
+        "job_title",
+        "address",
+        "products_offered",
+        "company_name",
+        "email",
+        "phone",
+        "catalog_url",
+    ]
+    corrected_value: str = Field(min_length=1, max_length=2000)
+    # Required (must identify a CardEmail.email_id/CardPhone.phone_id on this
+    # card) when field_name is "email"/"phone"; must be omitted otherwise —
+    # enforced below.
+    record_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def _validate_record_id(self) -> "CardFieldCorrectionRequest":
+        needs_record_id = self.field_name in ("email", "phone")
+        if needs_record_id and self.record_id is None:
+            raise ValueError("record_id is required when field_name is 'email' or 'phone'")
+        if not needs_record_id and self.record_id is not None:
+            raise ValueError("record_id must be omitted for this field_name")
+        return self

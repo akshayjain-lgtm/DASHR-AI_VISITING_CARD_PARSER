@@ -38,6 +38,7 @@ const baseCardFields = {
   lead_score: null,
   score_breakdown: null,
   scored_at: null,
+  rescore_available: false,
 } as const;
 
 function makeCard(params: {
@@ -302,6 +303,7 @@ describe("Upload page wallet refresh from the card detail drawer", () => {
       lead_score: null,
       score_breakdown: null,
       scored_at: null,
+      rescore_available: false,
       company: null,
       emails: [],
       phones: [],

@@ -52,6 +52,7 @@ const sampleCardDetail: CardDetailOut = {
   lead_score: null,
   score_breakdown: null,
   scored_at: null,
+  rescore_available: false,
   company: null,
   emails: [],
   phones: [],
@@ -74,6 +75,7 @@ const sampleCard: CardOut = {
   lead_score: null,
   score_breakdown: null,
   scored_at: null,
+  rescore_available: false,
 };
 
 const sampleExhibitions: ExhibitionOut[] = [];

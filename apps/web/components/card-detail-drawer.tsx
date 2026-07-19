@@ -1,16 +1,19 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { AlertCircle, Trash2, X } from "lucide-react";
+import { AlertCircle, Pencil, Trash2, X } from "lucide-react";
 import { DBtn, OBtn } from "@/components/buttons";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import {
   ApiError,
+  correctCardField,
   enrichCompany,
   getCard,
   reprocessCard,
   scoreCard,
+  type CardCompanyOut,
   type CardDetailOut,
+  type CorrectableFieldName,
 } from "@/lib/api";
 import { deleteConfirmCopy, useDeleteCardConfirm } from "@/lib/use-delete-card-confirm";
 
@@ -21,6 +24,98 @@ function SignalBadge({ children }: { children: React.ReactNode }) {
   return (
     <span className="inline-block border border-black/15 px-2 py-0.5 text-[11px] uppercase tracking-wide text-black/50">
       {children}
+    </span>
+  );
+}
+
+// Inline pencil -> text input -> save/cancel editor, used for every
+// AI-extracted/enriched field a user can correct on this drawer (see
+// .claude/specs/20-field-correction.md). `onSave` is expected to call
+// correctCardField and throw on failure — this component owns its own
+// editing/saving/error UI state and never touches the parent's `card` state
+// directly, so it can be reused for every field without per-field wiring.
+function InlineEditableValue({
+  value,
+  placeholder = "—",
+  onSave,
+  inputClassName,
+}: {
+  value: string;
+  placeholder?: string;
+  onSave: (newValue: string) => Promise<void>;
+  inputClassName?: string;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!editing) {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <span>{value || placeholder}</span>
+        <button
+          onClick={() => {
+            setDraft(value);
+            setError(null);
+            setEditing(true);
+          }}
+          className="text-black/30 hover:text-black/60 transition-colors"
+          aria-label="Edit"
+        >
+          <Pencil size={11} />
+        </button>
+      </span>
+    );
+  }
+
+  async function handleSave() {
+    if (!draft.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave(draft.trim());
+      setEditing(false);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to save correction");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <span className="inline-flex flex-col gap-1 align-middle">
+      <span className="inline-flex items-center gap-1.5">
+        <input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          disabled={saving}
+          className={
+            inputClassName ??
+            "border border-black/20 px-1.5 py-0.5 text-sm min-w-[10rem] focus:outline-none focus:border-black/40"
+          }
+          onKeyDown={(e) => {
+            if (e.key === "Enter") handleSave();
+            if (e.key === "Escape") setEditing(false);
+          }}
+        />
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="text-[11px] font-bold text-[#E65527] disabled:opacity-50"
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+        <button
+          onClick={() => setEditing(false)}
+          disabled={saving}
+          className="text-[11px] text-black/40 disabled:opacity-50"
+        >
+          Cancel
+        </button>
+      </span>
+      {error && <span className="text-[11px] text-red-600">{error}</span>}
     </span>
   );
 }
@@ -148,6 +243,76 @@ export function CardDetailDrawer({
     }
   }
 
+  // catalog_url is the one correctable field with an async side effect: the
+  // corrected URL lands in the response synchronously, but the rest of the
+  // indiamart_*/marketplace_* fields refresh via a Celery re-fetch. Reuses
+  // the same poll-until-changed shape as handleScoreCard above, snapshotting
+  // those fields right before the correction call and polling until they
+  // change, with a bounded max-poll fallback so a genuinely-empty re-fetch
+  // response doesn't spin the "Refreshing…" state forever.
+  const [isRefreshingCatalog, setIsRefreshingCatalog] = useState(false);
+  const priorIndiamartSnapshotRef = useRef<string | null>(null);
+  const catalogPollCountRef = useRef(0);
+
+  function indiamartSnapshot(company: CardCompanyOut | null): string {
+    if (!company) return "";
+    const {
+      indiamart_rating, indiamart_rating_count, indiamart_member_since_year,
+      indiamart_business_type, indiamart_employee_count_band, indiamart_annual_turnover_band,
+      indiamart_year_established, indiamart_gst_number, indiamart_gst_registration_year,
+      indiamart_call_response_rate, marketplace_verified_badge, marketplace_vintage_years,
+    } = company;
+    return JSON.stringify({
+      indiamart_rating, indiamart_rating_count, indiamart_member_since_year,
+      indiamart_business_type, indiamart_employee_count_band, indiamart_annual_turnover_band,
+      indiamart_year_established, indiamart_gst_number, indiamart_gst_registration_year,
+      indiamart_call_response_rate, marketplace_verified_badge, marketplace_vintage_years,
+    });
+  }
+
+  useEffect(() => {
+    if (!isRefreshingCatalog) return;
+    catalogPollCountRef.current = 0;
+    const interval = setInterval(async () => {
+      catalogPollCountRef.current += 1;
+      try {
+        const latest = await getCard(cardId);
+        if (indiamartSnapshot(latest.company) !== priorIndiamartSnapshotRef.current) {
+          setCard(latest);
+          setIsRefreshingCatalog(false);
+          onChanged?.();
+          return;
+        }
+      } catch {
+        // Transient poll failure — keep polling rather than surfacing an error.
+      }
+      if (catalogPollCountRef.current >= 15) {
+        setIsRefreshingCatalog(false); // ~30s bound — an empty re-fetch must not spin forever
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [isRefreshingCatalog, cardId, onChanged]);
+
+  async function handleCorrect(
+    fieldName: CorrectableFieldName,
+    correctedValue: string,
+    recordId?: string
+  ) {
+    if (fieldName === "catalog_url") {
+      priorIndiamartSnapshotRef.current = indiamartSnapshot(card?.company ?? null);
+    }
+    const updated = await correctCardField(cardId, {
+      field_name: fieldName,
+      corrected_value: correctedValue,
+      record_id: recordId ?? null,
+    });
+    setCard(updated);
+    onChanged?.();
+    if (fieldName === "catalog_url") {
+      setIsRefreshingCatalog(true);
+    }
+  }
+
   const deleteConfirm = deleteConfirmCopy(deleteState);
 
   return (
@@ -196,8 +361,20 @@ export function CardDetailDrawer({
                 </div>
               )}
               <div>
-                <p className="text-lg font-black">{card.full_name ?? "Unnamed contact"}</p>
-                <p className="text-sm text-black/50">{card.job_title ?? "—"}</p>
+                <p className="text-lg font-black">
+                  <InlineEditableValue
+                    value={card.full_name ?? ""}
+                    placeholder="Unnamed contact"
+                    onSave={(v) => handleCorrect("full_name", v)}
+                  />
+                </p>
+                <p className="text-sm text-black/50">
+                  <InlineEditableValue
+                    value={card.job_title ?? ""}
+                    placeholder="—"
+                    onSave={(v) => handleCorrect("job_title", v)}
+                  />
+                </p>
                 {card.designation_level && (
                   <span className="inline-block mt-2 border border-black/15 px-2 py-0.5 text-[11px] uppercase tracking-wide text-black/50">
                     {card.designation_level.replace(/_/g, " ")}
@@ -211,7 +388,13 @@ export function CardDetailDrawer({
                 </h3>
                 {card.company ? (
                   <div className="text-sm space-y-2">
-                    <p className="font-semibold">{card.company.name}</p>
+                    <p className="font-semibold">
+                      <InlineEditableValue
+                        value={card.company.name ?? ""}
+                        placeholder="—"
+                        onSave={(v) => handleCorrect("company_name", v)}
+                      />
+                    </p>
                     {card.company.enrichment_status === "pending" && (
                       <div className="space-y-1.5">
                         <p className="text-black/40 text-xs">
@@ -308,9 +491,26 @@ export function CardDetailDrawer({
                         View IndiaMART catalogue ↗
                       </a>
                     )}
+                    <p className="text-xs text-black/40">
+                      IndiaMART URL:{" "}
+                      <InlineEditableValue
+                        value={card.company.catalog_url ?? ""}
+                        placeholder="Not set"
+                        onSave={(v) => handleCorrect("catalog_url", v)}
+                      />
+                    </p>
+                    {isRefreshingCatalog && (
+                      <p className="text-xs text-black/40 italic">Refreshing IndiaMART data…</p>
+                    )}
                   </div>
                 ) : (
-                  <p className="text-sm text-black/30">—</p>
+                  <div className="text-sm text-black/30">
+                    <InlineEditableValue
+                      value=""
+                      placeholder="—"
+                      onSave={(v) => handleCorrect("company_name", v)}
+                    />
+                  </div>
                 )}
               </div>
 
@@ -361,9 +561,18 @@ export function CardDetailDrawer({
                   >
                     {isScoring ? "Scoring…" : "Score Card"}
                   </OBtn>
+                ) : card.rescore_available ? (
+                  <div className="space-y-1">
+                    <OBtn onClick={handleScoreCard} disabled={isScoring} className="text-xs mt-2">
+                      {isScoring ? "Rescoring…" : "Rescore Card"}
+                    </OBtn>
+                    <p className="text-[11px] text-black/30">
+                      You corrected a field since this card was scored — rescoring is free.
+                    </p>
+                  </div>
                 ) : (
                   <p className="text-xs text-black/30 mt-2">
-                    This card has already been scored — scoring is one-shot and can&rsquo;t be repeated.
+                    This card has already been scored — correct a field to unlock a free rescore.
                   </p>
                 )}
                 {scoreError && <p className="text-xs text-red-600 mt-1">{scoreError}</p>}
@@ -376,18 +585,22 @@ export function CardDetailDrawer({
                     {card.website}
                   </p>
                 )}
-                {card.address && (
-                  <p>
-                    <span className="text-black/40">Address: </span>
-                    {card.address}
-                  </p>
-                )}
-                {card.products_offered && (
-                  <p>
-                    <span className="text-black/40">Products: </span>
-                    {card.products_offered}
-                  </p>
-                )}
+                <p>
+                  <span className="text-black/40">Address: </span>
+                  <InlineEditableValue
+                    value={card.address ?? ""}
+                    placeholder="—"
+                    onSave={(v) => handleCorrect("address", v)}
+                  />
+                </p>
+                <p>
+                  <span className="text-black/40">Products: </span>
+                  <InlineEditableValue
+                    value={card.products_offered ?? ""}
+                    placeholder="—"
+                    onSave={(v) => handleCorrect("products_offered", v)}
+                  />
+                </p>
                 {card.gst_number && (
                   <p>
                     <span className="text-black/40">GST No: </span>
@@ -408,8 +621,12 @@ export function CardDetailDrawer({
                 </h3>
                 {card.emails.length === 0 && <p className="text-sm text-black/30">—</p>}
                 {card.emails.map((e) => (
-                  <p key={e.email} className="text-sm">
-                    {e.email}{" "}
+                  <p key={e.email_id} className="text-sm">
+                    <InlineEditableValue
+                      value={e.email ?? ""}
+                      placeholder="—"
+                      onSave={(v) => handleCorrect("email", v, e.email_id)}
+                    />{" "}
                     {e.is_primary && (
                       <span className="text-[10px] text-black/35">(primary)</span>
                     )}
@@ -423,8 +640,12 @@ export function CardDetailDrawer({
                 </h3>
                 {card.phones.length === 0 && <p className="text-sm text-black/30">—</p>}
                 {card.phones.map((p) => (
-                  <p key={p.phone_raw ?? p.phone_e164} className="text-sm">
-                    {p.phone_e164 ?? p.phone_raw}{" "}
+                  <p key={p.phone_id} className="text-sm">
+                    <InlineEditableValue
+                      value={p.phone_e164 ?? p.phone_raw ?? ""}
+                      placeholder="—"
+                      onSave={(v) => handleCorrect("phone", v, p.phone_id)}
+                    />{" "}
                     {p.is_primary && (
                       <span className="text-[10px] text-black/35">(primary)</span>
                     )}

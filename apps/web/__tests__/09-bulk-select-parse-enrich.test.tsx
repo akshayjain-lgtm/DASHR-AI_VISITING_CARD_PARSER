@@ -50,6 +50,7 @@ const sampleCardDetail: CardDetailOut = {
   lead_score: null,
   score_breakdown: null,
   scored_at: null,
+  rescore_available: false,
   company: null,
   emails: [],
   phones: [],
@@ -66,6 +67,7 @@ const baseCardFields = {
   lead_score: null,
   score_breakdown: null,
   scored_at: null,
+  rescore_available: false,
 } as const;
 
 function makeCard(params: {
