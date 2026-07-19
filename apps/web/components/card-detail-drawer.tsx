@@ -14,6 +14,17 @@ import {
 } from "@/lib/api";
 import { deleteConfirmCopy, useDeleteCardConfirm } from "@/lib/use-delete-card-confirm";
 
+// Shared pill styling for every headline signal/score badge on this drawer
+// (company signals, score breakdown) — extracted to stop hand-copying the
+// same className string per field.
+function SignalBadge({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="inline-block border border-black/15 px-2 py-0.5 text-[11px] uppercase tracking-wide text-black/50">
+      {children}
+    </span>
+  );
+}
+
 export function CardDetailDrawer({
   cardId,
   onClose,
@@ -230,36 +241,73 @@ export function CardDetailDrawer({
                     )}
                     <div className="flex flex-wrap gap-1">
                       {card.company.linkedin_employee_count != null && (
-                        <span className="inline-block border border-black/15 px-2 py-0.5 text-[11px] uppercase tracking-wide text-black/50">
-                          {card.company.linkedin_employee_count} employees
-                        </span>
+                        <SignalBadge>{card.company.linkedin_employee_count} employees</SignalBadge>
                       )}
                       {card.company.estimated_revenue_band && (
-                        <span className="inline-block border border-black/15 px-2 py-0.5 text-[11px] uppercase tracking-wide text-black/50">
-                          {card.company.estimated_revenue_band}
-                        </span>
+                        <SignalBadge>{card.company.estimated_revenue_band}</SignalBadge>
                       )}
                       {card.company.gstin_verified != null && (
-                        <span className="inline-block border border-black/15 px-2 py-0.5 text-[11px] uppercase tracking-wide text-black/50">
-                          {card.company.gstin_verified ? "GSTIN ✓" : "GSTIN ✗"}
-                        </span>
+                        <SignalBadge>{card.company.gstin_verified ? "GSTIN ✓" : "GSTIN ✗"}</SignalBadge>
                       )}
                       {card.company.udyam_registered != null && (
-                        <span className="inline-block border border-black/15 px-2 py-0.5 text-[11px] uppercase tracking-wide text-black/50">
-                          {card.company.udyam_registered ? "Udyam ✓" : "Udyam ✗"}
-                        </span>
+                        <SignalBadge>{card.company.udyam_registered ? "Udyam ✓" : "Udyam ✗"}</SignalBadge>
                       )}
                       {card.company.hiring_signal && (
-                        <span className="inline-block border border-black/15 px-2 py-0.5 text-[11px] uppercase tracking-wide text-black/50">
-                          {card.company.hiring_signal}
-                        </span>
+                        <SignalBadge>{card.company.hiring_signal}</SignalBadge>
                       )}
                       {card.company.google_rating != null && (
-                        <span className="inline-block border border-black/15 px-2 py-0.5 text-[11px] uppercase tracking-wide text-black/50">
-                          ★ {card.company.google_rating}
-                        </span>
+                        <SignalBadge>★ {card.company.google_rating}</SignalBadge>
+                      )}
+                      {card.company.marketplace_verified_badge != null && (
+                        <SignalBadge>
+                          {card.company.marketplace_verified_badge
+                            ? "IndiaMART Verified ✓"
+                            : "IndiaMART Verified ✗"}
+                        </SignalBadge>
+                      )}
+                      {card.company.marketplace_vintage_years != null && (
+                        <SignalBadge>{card.company.marketplace_vintage_years} yrs on IndiaMART</SignalBadge>
+                      )}
+                      {card.company.indiamart_rating != null && (
+                        <SignalBadge>
+                          ★ {card.company.indiamart_rating} IndiaMART
+                          {card.company.indiamart_rating_count != null
+                            ? ` (${card.company.indiamart_rating_count})`
+                            : ""}
+                        </SignalBadge>
+                      )}
+                      {card.company.indiamart_business_type && (
+                        <SignalBadge>{card.company.indiamart_business_type}</SignalBadge>
+                      )}
+                      {card.company.indiamart_employee_count_band && (
+                        <SignalBadge>{card.company.indiamart_employee_count_band}</SignalBadge>
+                      )}
+                      {card.company.indiamart_annual_turnover_band && (
+                        <SignalBadge>{card.company.indiamart_annual_turnover_band}</SignalBadge>
+                      )}
+                      {card.company.indiamart_year_established && (
+                        <SignalBadge>Est. {card.company.indiamart_year_established}</SignalBadge>
+                      )}
+                      {card.company.indiamart_gst_number && (
+                        <SignalBadge>GST {card.company.indiamart_gst_number}</SignalBadge>
+                      )}
+                      {card.company.indiamart_gst_registration_year != null && (
+                        <SignalBadge>GST reg. {card.company.indiamart_gst_registration_year}</SignalBadge>
+                      )}
+                      {card.company.indiamart_call_response_rate && (
+                        <SignalBadge>{card.company.indiamart_call_response_rate} response rate</SignalBadge>
                       )}
                     </div>
+                    {card.company.catalog_url && (
+                      <a
+                        href={card.company.catalog_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-block text-xs text-[#E65527] underline underline-offset-2 hover:text-[#c8461f]"
+                      >
+                        View IndiaMART catalogue ↗
+                      </a>
+                    )}
                   </div>
                 ) : (
                   <p className="text-sm text-black/30">—</p>
@@ -289,12 +337,9 @@ export function CardDetailDrawer({
                               "remark_signal_score",
                             ] as const
                           ).map((key) => (
-                            <span
-                              key={key}
-                              className="inline-block border border-black/15 px-2 py-0.5 text-[11px] uppercase tracking-wide text-black/50"
-                            >
+                            <SignalBadge key={key}>
                               {key.replace(/_score$/, "").replace(/_/g, " ")}: {breakdown[key]}
-                            </span>
+                            </SignalBadge>
                           ));
                         })()}
                       </div>

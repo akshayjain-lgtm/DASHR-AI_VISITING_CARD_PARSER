@@ -215,6 +215,22 @@ export type CardCompanyOut = {
   udyam_registered: boolean | null;
   hiring_signal: string | null;
   google_rating: number | null;
+  // Public IndiaMART storefront/catalogue URL for this supplier; null until enrichment finds one.
+  catalog_url: string | null;
+  marketplace_verified_badge: boolean | null;
+  marketplace_vintage_years: number | null;
+  // IndiaMART supplier-profile fields (Apify "IndiaMart Scraper" actor).
+  indiamart_rating: number | null;
+  indiamart_rating_count: number | null;
+  indiamart_member_since_year: number | null;
+  indiamart_business_type: string | null;
+  indiamart_employee_count_band: string | null;
+  indiamart_annual_turnover_band: string | null;
+  indiamart_year_established: string | null;
+  indiamart_gst_number: string | null;
+  // Only ever observed as a bare year (e.g. "2017"), never a full date.
+  indiamart_gst_registration_year: number | null;
+  indiamart_call_response_rate: string | null;
 };
 
 export type CardEmailOut = {

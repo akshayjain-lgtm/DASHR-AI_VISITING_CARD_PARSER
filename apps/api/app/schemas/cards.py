@@ -72,6 +72,26 @@ class CardCompanyOut(BaseModel):
     udyam_registered: bool | None
     hiring_signal: str | None
     google_rating: float | None
+    # This supplier's public IndiaMART storefront/catalogue URL; null until
+    # enrichment finds one (mirrors CompanySignals.catalog_url).
+    catalog_url: str | None
+    marketplace_verified_badge: bool | None
+    marketplace_vintage_years: int | None
+    # IndiaMART supplier-profile fields (Apify "IndiaMart Scraper" actor,
+    # mode=supplierProfile, queried against catalog_url above).
+    # float, not Decimal — same reason as lead_score above: Pydantic v2
+    # would otherwise serialize this Numeric column to a JSON string.
+    indiamart_rating: float | None
+    indiamart_rating_count: int | None
+    indiamart_member_since_year: int | None
+    indiamart_business_type: str | None
+    indiamart_employee_count_band: str | None
+    indiamart_annual_turnover_band: str | None
+    indiamart_year_established: str | None
+    indiamart_gst_number: str | None
+    # Only ever observed as a bare year (e.g. "2017"), never a full date.
+    indiamart_gst_registration_year: int | None
+    indiamart_call_response_rate: str | None
 
 
 class CardEmailOut(BaseModel):
