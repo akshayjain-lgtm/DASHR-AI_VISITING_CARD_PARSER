@@ -182,3 +182,52 @@ def enrich_company_task(
         db.commit()
     finally:
         db.close()
+
+
+@celery_app.task(
+    name="app.workers.enrichment_processing.rerun_indiamart_supplier_profile_task",
+    bind=True,
+    max_retries=_MAX_ENRICHMENT_RETRIES,
+)
+def rerun_indiamart_supplier_profile_task(
+    self, company_id: str, catalog_url: str, source_card_id: str
+) -> None:
+    """Re-runs the IndiaMART supplier-profile Apify lookup against a
+    user-corrected catalog_url — see .claude/specs/20-field-correction.md.
+    Mirrors enrich_company_task's fresh-SessionLocal/retry shape, but has no
+    pending/enriching status-machine guard to protect: CompanySignals
+    carries no such state, and re-running against the same catalog_url is
+    naturally idempotent.
+
+    Never billed (see the spec's billing amendment — correcting a URL fixes
+    a mistake in an already-paid-for enrichment, not a new billable action),
+    so unlike enrich_company_task there is no `billed` flag and nothing to
+    refund on a permanent failure — just log it.
+    """
+    db = SessionLocal()
+    try:
+        company = db.get(Company, uuid.UUID(company_id))
+        if company is None:
+            logger.warning(
+                "rerun_indiamart_supplier_profile_task: company_id %s not found", company_id
+            )
+            return
+
+        try:
+            enrichment_service.rerun_supplier_profile_lookup(db, company, catalog_url)
+        except Exception as exc:
+            countdown = 2**self.request.retries
+            try:
+                self.retry(countdown=countdown, max_retries=_MAX_ENRICHMENT_RETRIES)
+            except MaxRetriesExceededError:
+                logger.error(
+                    "rerun_indiamart_supplier_profile_task: exhausted retries for "
+                    "company_id=%s, source_card_id=%s: %s",
+                    company_id, source_card_id, exc,
+                )
+                db.rollback()
+            return
+
+        db.commit()
+    finally:
+        db.close()

@@ -1,5 +1,6 @@
 import logging
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from fastapi import UploadFile
@@ -13,9 +14,11 @@ from app.models.card_phone import CardPhone
 from app.models.company import Company
 from app.models.company_signals import CompanySignals
 from app.models.exhibition import Exhibition
+from app.models.field_correction import FieldCorrection
 from app.models.user import User
 from app.models.visiting_card import VisitingCard
-from app.services import billing, exhibition_service, storage_service
+from app.services import billing, designation, exhibition_service, field_correction_service, storage_service
+from app.services.enrichment_providers.local_presence_url_utils import _is_indiamart_url
 from app.services.exceptions import (
     BatchTooLargeError,
     CardAlreadyScoredError,
@@ -25,15 +28,27 @@ from app.services.exceptions import (
     CardNotFoundError,
     CardStateChangedError,
     CompanyNotEligibleForEnrichmentError,
+    CorrectionRateLimitedError,
     EmptyBatchError,
+    FieldCorrectionRecordNotFoundError,
     FileTooLargeError,
+    InvalidCorrectionValueError,
     InvalidReprocessStateError,
+    NoOpCorrectionError,
     UnsupportedFileTypeError,
+)
+from app.services.extraction_service import (
+    _get_or_create_company,
+    _normalize_email,
+    _normalize_phone,
 )
 from app.services.file_reading import read_limited, verify_image_content
 from app.services.visibility import scope_to_visible_users
 from app.workers.card_processing import process_card
-from app.workers.enrichment_processing import enrich_company_task
+from app.workers.enrichment_processing import (
+    enrich_company_task,
+    rerun_indiamart_supplier_profile_task,
+)
 from app.workers.scoring_processing import score_card_task
 
 logger = logging.getLogger(__name__)
@@ -318,6 +333,7 @@ def to_card_out(db: Session, card: VisitingCard) -> dict:
         "company_name": company_name,
         "company_enrichment_status": company_enrichment_status,
         **_card_scoring_fields(card),
+        "rescore_available": field_correction_service.has_correction_since_score(db, card),
     }
 
 
@@ -405,6 +421,7 @@ def get_card_detail(db: Session, current_user: User, card_id: uuid.UUID) -> dict
         "merged_into_card_id": card.merged_into_card_id,
         "created_at": card.created_at,
         **_card_scoring_fields(card),
+        "rescore_available": field_correction_service.has_correction_since_score(db, card),
         "company": {
             "company_id": company.company_id,
             "name": company.name,
@@ -418,11 +435,17 @@ def get_card_detail(db: Session, current_user: User, card_id: uuid.UUID) -> dict
         if company
         else None,
         "emails": [
-            {"email": e.email, "email_type": e.email_type, "is_primary": e.is_primary}
+            {
+                "email_id": e.email_id,
+                "email": e.email,
+                "email_type": e.email_type,
+                "is_primary": e.is_primary,
+            }
             for e in emails
         ],
         "phones": [
             {
+                "phone_id": p.phone_id,
                 "phone_e164": p.phone_e164,
                 "phone_raw": p.phone_raw,
                 "phone_type": p.phone_type,
@@ -582,6 +605,236 @@ def reprocess_card(db: Session, current_user: User, card_id: uuid.UUID) -> Visit
     return card
 
 
+_TEXT_CORRECTION_FIELDS = frozenset({"full_name", "job_title", "address", "products_offered"})
+
+# Anti-abuse throttle for catalog_url corrections only. Every other
+# correction is either a plain DB write or, at worst (a rescore), a
+# compute-only action guarded by the no-op check below — but catalog_url
+# triggers a real, paid Apify re-fetch, and Phase 2 deliberately removed the
+# only thing that used to rate-limit it (billing.charge_for_action). This
+# is a cheap first line of defense against a tight request loop cycling
+# between two distinct real URLs to force unlimited Apify spend — not a
+# comprehensive rate limiter.
+_CATALOG_URL_CORRECTION_COOLDOWN = timedelta(minutes=1)
+
+
+def _write_correction(
+    db: Session,
+    current_user: User,
+    card: VisitingCard,
+    field_name: str,
+    original_value: str | None,
+    corrected_value: str,
+    record_id: uuid.UUID | None,
+) -> None:
+    db.add(FieldCorrection(
+        org_id=current_user.org_id,
+        card_id=card.card_id,
+        corrected_by_user_id=current_user.user_id,
+        field_name=field_name,
+        record_id=record_id,
+        original_value=original_value,
+        corrected_value=corrected_value,
+    ))
+
+
+def _catalog_url_correction_on_cooldown(db: Session, current_user: User) -> bool:
+    cutoff = datetime.now(timezone.utc) - _CATALOG_URL_CORRECTION_COOLDOWN
+    return (
+        db.scalar(
+            select(FieldCorrection.correction_id)
+            .where(
+                FieldCorrection.corrected_by_user_id == current_user.user_id,
+                FieldCorrection.field_name == "catalog_url",
+                FieldCorrection.created_at > cutoff,
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def _correct_text_field(
+    db: Session, current_user: User, card: VisitingCard, field_name: str, corrected_value: str
+) -> None:
+    original_value = getattr(card, field_name)
+    if corrected_value == original_value:
+        raise NoOpCorrectionError()
+    setattr(card, field_name, corrected_value)
+    if field_name == "job_title":
+        # designation_level (what _designation_score actually scores off —
+        # see scoring.py) is derived from job_title, not stored
+        # independently; a job_title correction must re-derive it or a
+        # (re)score would keep reading the stale pre-correction level. Not
+        # its own FieldCorrection row — a computed consequence of the
+        # job_title correction already being audited, same as
+        # company_name's re-match not getting a separate audit row.
+        card.designation_level = designation.classify(corrected_value)
+    _write_correction(db, current_user, card, field_name, original_value, corrected_value, None)
+    db.commit()
+
+
+def _correct_company_name(
+    db: Session, current_user: User, card: VisitingCard, corrected_value: str
+) -> None:
+    old_company = db.get(Company, card.company_id) if card.company_id else None
+    original_value = old_company.name if old_company else None
+    if corrected_value == original_value:
+        raise NoOpCorrectionError()
+    new_company = _get_or_create_company(db, corrected_value, card.website)
+    card.company_id = new_company.company_id if new_company else None
+    _write_correction(db, current_user, card, "company_name", original_value, corrected_value, None)
+    db.commit()
+
+
+def _correct_email_or_phone(
+    db: Session,
+    current_user: User,
+    card: VisitingCard,
+    field_name: str,
+    corrected_value: str,
+    record_id: uuid.UUID | None,
+) -> None:
+    if field_name == "email":
+        row = db.scalar(
+            select(CardEmail).where(CardEmail.email_id == record_id, CardEmail.card_id == card.card_id)
+        )
+        if row is None:
+            raise FieldCorrectionRecordNotFoundError()
+        normalized = _normalize_email({"email": corrected_value, "email_type": row.email_type})
+        if normalized is None:
+            raise InvalidCorrectionValueError("Corrected email is not a valid email address")
+        original_value = row.email
+        if normalized["email"] == original_value:
+            raise NoOpCorrectionError()
+        row.email = normalized["email"]
+    else:
+        row = db.scalar(
+            select(CardPhone).where(CardPhone.phone_id == record_id, CardPhone.card_id == card.card_id)
+        )
+        if row is None:
+            raise FieldCorrectionRecordNotFoundError()
+        normalized = _normalize_phone({"phone": corrected_value, "phone_type": row.phone_type})
+        # Stricter than the extraction pipeline: a correction that can't
+        # produce an E.164 form is rejected outright, never kept as an
+        # unparseable phone_raw.
+        if normalized["phone_e164"] is None:
+            raise InvalidCorrectionValueError("Corrected phone number could not be parsed")
+        original_value = row.phone_e164 or row.phone_raw
+        if normalized["phone_e164"] == row.phone_e164:
+            raise NoOpCorrectionError()
+        row.phone_e164 = normalized["phone_e164"]
+        row.phone_raw = normalized["phone_raw"]
+
+    _write_correction(db, current_user, card, field_name, original_value, corrected_value, record_id)
+    try:
+        db.commit()
+    except IntegrityError:
+        # (card_id, email)/(card_id, phone_e164) unique constraint hit —
+        # the corrected value collides with another row already on this
+        # card. Same rollback-then-domain-exception shape as delete_card.
+        db.rollback()
+        raise InvalidCorrectionValueError(
+            f"This {field_name} already exists on another record for this card"
+        )
+
+
+def _correct_catalog_url(
+    db: Session, current_user: User, card: VisitingCard, corrected_value: str
+) -> None:
+    if not _is_indiamart_url(corrected_value):
+        raise InvalidCorrectionValueError("catalog_url must be an indiamart.com URL")
+    if card.company_id is None:
+        raise CardHasNoCompanyError()
+    company = db.get(Company, card.company_id)
+    if company is None:
+        # A vanished Company row is a data-integrity edge case (likely
+        # unreachable outside a race), not the same condition
+        # enrich_company_now's CompanyNotEligibleForEnrichmentError guards
+        # (an existing company that isn't in "pending" status) — this
+        # endpoint has no such status requirement, so "no usable company to
+        # correct against" is CardHasNoCompanyError either way, matching
+        # the card.company_id is None case above.
+        raise CardHasNoCompanyError()
+
+    signals = db.get(CompanySignals, company.company_id)
+    original_value = signals.catalog_url if signals else None
+    if corrected_value == original_value:
+        raise NoOpCorrectionError()
+    if _catalog_url_correction_on_cooldown(db, current_user):
+        raise CorrectionRateLimitedError()
+
+    # Never billed: this re-fetch is fixing a mistake in the company's
+    # already-paid-for enrichment, not a brand-new billable action — see
+    # .claude/specs/20-field-correction.md's billing amendment. No
+    # charge_for_action call, so there is nothing to refund either if the
+    # enqueue below fails. The no-op guard and cooldown above are this
+    # path's actual abuse defense now that billing no longer serves that role.
+    if signals is None:
+        signals = CompanySignals(company_id=company.company_id)
+        db.add(signals)
+    # Shared cache row — updated in place, unlike company_name above.
+    signals.catalog_url = corrected_value
+
+    _write_correction(db, current_user, card, "catalog_url", original_value, corrected_value, None)
+    db.commit()
+
+    try:
+        rerun_indiamart_supplier_profile_task.delay(str(company.company_id), corrected_value, str(card.card_id))
+    except Exception:
+        logger.exception(
+            "Failed to enqueue rerun_indiamart_supplier_profile_task for company_id=%s",
+            company.company_id,
+        )
+
+
+def correct_card_field(
+    db: Session,
+    current_user: User,
+    card_id: uuid.UUID,
+    field_name: str,
+    corrected_value: str,
+    record_id: uuid.UUID | None = None,
+) -> dict:
+    """POST /cards/{card_id}/corrections — lets a user fix an AI-mis-extracted
+    or mis-enriched field, writing an append-only FieldCorrection audit row
+    (original + corrected value) alongside applying the fix. See
+    .claude/specs/20-field-correction.md.
+
+    A thin dispatcher — all the actual per-field-type logic lives in the
+    `_correct_*` helpers above. Every branch rejects a no-op correction
+    (`corrected_value` equal to the field's current value) via
+    NoOpCorrectionError before writing anything: for catalog_url this closes
+    a trivial "resubmit the same URL" Apify-spam loop, and for every other
+    field it closes a "resubmit the same value repeatedly" free-rescore-spam
+    loop (see score_card_now) — neither is billed, so nothing else naturally
+    throttles a script that just keeps calling this endpoint.
+
+    company_name re-matches/creates a Company row rather than renaming the
+    linked one in place — Company is a cross-org cache, and an in-place
+    rename would relabel that company for every other org sharing the row.
+    catalog_url is the one exception: CompanySignals is itself shared,
+    non-org-scoped cache data, so it's updated in place and a re-fetch is
+    enqueued to refresh the rest of that company's indiamart_* fields — it
+    also gets its own cooldown (see _catalog_url_correction_on_cooldown),
+    since the no-op guard alone doesn't stop cycling between two distinct
+    real URLs.
+    """
+    card = get_visible_card(db, current_user, card_id)
+    corrected_value = corrected_value.strip()
+
+    if field_name in _TEXT_CORRECTION_FIELDS:
+        _correct_text_field(db, current_user, card, field_name, corrected_value)
+    elif field_name == "company_name":
+        _correct_company_name(db, current_user, card, corrected_value)
+    elif field_name in ("email", "phone"):
+        _correct_email_or_phone(db, current_user, card, field_name, corrected_value, record_id)
+    elif field_name == "catalog_url":
+        _correct_catalog_url(db, current_user, card, corrected_value)
+
+    return get_card_detail(db, current_user, card_id)
+
+
 def enrich_company_now(db: Session, current_user: User, card_id: uuid.UUID) -> VisitingCard:
     """The explicit "Enrich Company" CTA — POST /cards/{card_id}/enrich-company.
 
@@ -672,28 +925,50 @@ def enqueue_enrichment(
 
 
 def score_card_now(db: Session, current_user: User, card_id: uuid.UUID) -> VisitingCard:
-    """The explicit, one-shot "Score Card" CTA — POST /cards/{card_id}/score.
+    """The explicit "Score Card" CTA — POST /cards/{card_id}/score.
 
-    Scoring is one-shot per card: once lead_score is set, re-scoring is
-    rejected (CardAlreadyScoredError) rather than allowed, so a card's score
-    can't drift after a seller has already acted on it. Enforced here, not
-    just hidden in the UI, so a direct API call can't bypass the rule.
+    Scoring is one-shot per card *unless* a field was corrected since the
+    last score (see .claude/specs/20-field-correction.md's rescore
+    amendment): once lead_score is set, re-scoring is rejected
+    (CardAlreadyScoredError) unless a FieldCorrection row postdates
+    scored_at, in which case a rescore is allowed and — since the seller is
+    only asking the score to reflect a mistake DASHR's own AI made, not
+    requesting a brand new action — it's free: no charge_for_action call at
+    all, never billed and never counted against the free allowance either.
+    Enforced here, not just hidden in the UI, so a direct API call can't
+    bypass the one-shot rule (or abuse the free-rescore carve-out on a card
+    with no actual correction).
     """
     card = get_visible_card(db, current_user, card_id)
     if card.status != "extracted":
         raise CardNotEligibleForScoringError()
-    if card.lead_score is not None:
-        raise CardAlreadyScoredError()
 
-    billed = billing.charge_for_action(db, current_user.user_id, "scoring", reference_id=card.card_id)
+    rescoring = False
+    if card.lead_score is not None:
+        if not field_correction_service.has_correction_since_score(db, card):
+            raise CardAlreadyScoredError()
+        rescoring = True
+
+    billed = (
+        False
+        if rescoring
+        else billing.charge_for_action(db, current_user.user_id, "scoring", reference_id=card.card_id)
+    )
 
     try:
         score_card_task.delay(str(card.card_id), billed=billed)
     except Exception:
         logger.exception("Failed to enqueue score_card_task for card_id=%s", card.card_id)
-        # Never even queued — reverse the charge (see reprocess_card's
-        # identical rationale).
-        billing.refund_action(db, current_user.user_id, "scoring", billed=billed, reference_id=card.card_id)
+        if not rescoring:
+            # Never even queued — reverse the charge (see reprocess_card's
+            # identical rationale). A free rescore never called
+            # charge_for_action in the first place, so there is nothing to
+            # refund — calling refund_action here would incorrectly
+            # decrement the user's free-allowance count for an action they
+            # never actually used it on.
+            billing.refund_action(
+                db, current_user.user_id, "scoring", billed=billed, reference_id=card.card_id
+            )
 
     return card
 

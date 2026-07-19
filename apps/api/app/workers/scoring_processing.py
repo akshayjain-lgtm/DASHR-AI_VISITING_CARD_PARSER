@@ -9,7 +9,7 @@ from app.models.company import Company
 from app.models.company_signals import CompanySignals
 from app.models.user import User
 from app.models.visiting_card import VisitingCard
-from app.services import billing, profile_service, scoring
+from app.services import billing, field_correction_service, profile_service, scoring
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -40,14 +40,23 @@ def score_card_task(self, card_id: str, billed: bool = False) -> None:
     no external I/O and so has no in-flight status to transition through —
     there is no fresh-delivery-vs-retry branch on self.request.retries.
     Instead the eligibility checks (card.status == "extracted", card not
-    already scored) are re-run identically on every attempt, fresh or
-    retried; if the card's status moved out of "extracted" underneath a
-    stuck/retried task, or it was already scored by a duplicate/concurrent
+    already scored unless a correction postdates its last score) are re-run
+    identically on every attempt, fresh or retried; if the card's status
+    moved out of "extracted" underneath a stuck/retried task, or it was
+    already scored (with no correction since) by a duplicate/concurrent
     enqueue, the task just logs and returns rather than clobbering a card
-    that's no longer eligible. This is the same one-shot rule enforced in
+    that's no longer eligible. This is the same rule enforced in
     card_service.score_card_now/enqueue_scoring, re-checked here too since
     two enqueues racing past the service-layer check could otherwise both
     reach this task.
+
+    `is_rescore` (whether lead_score was already set when this run started)
+    is derived fresh from the card here, not passed in — it doubles as the
+    signal for whether `billed`/refund-on-failure applies at all: a free
+    rescore (see .claude/specs/20-field-correction.md) never went through
+    billing.charge_for_action, so refund_action must never be called for
+    it on retry exhaustion — that would incorrectly decrement the user's
+    free-allowance count for an action they never actually used it on.
 
     Seller calibration is loaded from the card's own owner (card.user_id),
     not whoever triggered this task — matters when an org admin scores a
@@ -66,9 +75,11 @@ def score_card_task(self, card_id: str, billed: bool = False) -> None:
                 card_id, card.status,
             )
             return
-        if card.lead_score is not None:
+        is_rescore = card.lead_score is not None
+        if is_rescore and not field_correction_service.has_correction_since_score(db, card):
             logger.info(
-                "score_card_task: card_id %s already scored, skipping (one-shot rule)",
+                "score_card_task: card_id %s already scored, no correction since, skipping "
+                "(one-shot rule)",
                 card_id,
             )
             return
@@ -94,9 +105,10 @@ def score_card_task(self, card_id: str, billed: bool = False) -> None:
                 logger.error(
                     "score_card_task: exhausted retries for card_id=%s: %s", card_id, exc
                 )
-                billing.refund_action(
-                    db, card.user_id, "scoring", billed=billed, reference_id=card.card_id
-                )
+                if not is_rescore:
+                    billing.refund_action(
+                        db, card.user_id, "scoring", billed=billed, reference_id=card.card_id
+                    )
             return
 
         card.lead_score = breakdown["total"]

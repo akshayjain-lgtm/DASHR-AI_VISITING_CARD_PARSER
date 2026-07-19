@@ -115,6 +115,34 @@ def _run_lookup(
         return {}
 
 
+# Lookup #12's field list — shared by run_all_signal_lookups (the original
+# fan-out, gated on a same-run catalog_url) and rerun_supplier_profile_lookup
+# (a correction-triggered re-fetch against an already-known catalog_url) so
+# the two call sites can't drift out of sync with each other.
+_SUPPLIER_PROFILE_FIELDS = [
+    "marketplace_verified_badge", "indiamart_rating", "indiamart_rating_count",
+    "indiamart_member_since_year", "indiamart_business_type",
+    "indiamart_employee_count_band", "indiamart_annual_turnover_band",
+    "indiamart_year_established", "indiamart_gst_number",
+    "indiamart_gst_registration_year", "indiamart_call_response_rate",
+]
+
+
+def _apply_marketplace_vintage_years(signals: CompanySignals) -> None:
+    """marketplace_vintage_years is derived from the supplier-profile
+    lookup's indiamart_member_since_year, same "bucketed here, not in the
+    provider" convention as hiring_signal/estimated_revenue_band. Reads
+    signals.indiamart_member_since_year (already set by the caller's
+    setattr loop), not a lookup's raw data dict — that dict is fully
+    consumed by that loop. Shared by run_all_signal_lookups and
+    rerun_supplier_profile_lookup so the current_year - member_since_year
+    formula lives in exactly one place."""
+    if signals.indiamart_member_since_year is not None:
+        vintage = datetime.now(timezone.utc).year - signals.indiamart_member_since_year
+        if vintage >= 0:
+            signals.marketplace_vintage_years = vintage
+
+
 def run_all_signal_lookups(
     db: Session,
     company: Company,
@@ -223,11 +251,7 @@ def run_all_signal_lookups(
             lambda: local_presence_provider.get_local_presence_provider().lookup_supplier_profile(
                 data["catalog_url"]
             ),
-            ["marketplace_verified_badge", "indiamart_rating", "indiamart_rating_count",
-             "indiamart_member_since_year", "indiamart_business_type",
-             "indiamart_employee_count_band", "indiamart_annual_turnover_band",
-             "indiamart_year_established", "indiamart_gst_number",
-             "indiamart_gst_registration_year", "indiamart_call_response_rate"],
+            _SUPPLIER_PROFILE_FIELDS,
         ))
 
     any_signal_found = any(value is not None for value in data.values())
@@ -242,15 +266,38 @@ def run_all_signal_lookups(
     signals.estimated_revenue_band = classify_revenue_band(
         signals.udyam_category, signals.paid_up_capital
     )
-    # marketplace_vintage_years is derived from the supplier-profile lookup's
-    # indiamart_member_since_year, same "bucketed here, not in the provider"
-    # convention as hiring_signal/estimated_revenue_band above. Reads
-    # signals.indiamart_member_since_year (already set by the setattr loop
-    # above), not data[...] — that dict is fully consumed by that loop.
-    if signals.indiamart_member_since_year is not None:
-        vintage = datetime.now(timezone.utc).year - signals.indiamart_member_since_year
-        if vintage >= 0:
-            signals.marketplace_vintage_years = vintage
+    _apply_marketplace_vintage_years(signals)
     signals.updated_at = datetime.now(timezone.utc)
 
     return signals, any_signal_found
+
+
+def rerun_supplier_profile_lookup(
+    db: Session, company: Company, catalog_url: str
+) -> CompanySignals:
+    """Re-runs lookup #12 (IndiaMART supplier-profile Apify call, see
+    run_all_signal_lookups above) against a user-corrected catalog_url,
+    sharing its exact field list/audit-row behavior, without re-running
+    lookups #1-11. Used by a `FieldCorrection` to catalog_url — see
+    .claude/specs/20-field-correction.md. Does not commit; mirrors
+    run_all_signal_lookups' caller-commits convention."""
+    signals = db.get(CompanySignals, company.company_id)
+    if signals is None:
+        signals = CompanySignals(company_id=company.company_id)
+        db.add(signals)
+    signals.catalog_url = catalog_url  # idempotent with card_service's own synchronous set
+
+    data = _run_lookup(
+        db, company.company_id, "indiamart_supplier_profile",
+        lambda: local_presence_provider.get_local_presence_provider().lookup_supplier_profile(
+            catalog_url
+        ),
+        _SUPPLIER_PROFILE_FIELDS,
+    )
+    for key, value in data.items():
+        setattr(signals, key, value)
+
+    _apply_marketplace_vintage_years(signals)
+    signals.updated_at = datetime.now(timezone.utc)
+
+    return signals

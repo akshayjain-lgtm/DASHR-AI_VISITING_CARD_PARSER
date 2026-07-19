@@ -198,6 +198,10 @@ export type CardOut = {
   // {designation_score, company_size_score, industry_fit_score, momentum_signal_score, remark_signal_score, total, version}
   score_breakdown: Record<string, number | string> | null;
   scored_at: string | null;
+  // True when a field was corrected after this card's last score — a free
+  // rescore is allowed (never billed, never counted against the free
+  // allowance).
+  rescore_available: boolean;
 };
 
 export type CardCompanyOut = {
@@ -234,12 +238,14 @@ export type CardCompanyOut = {
 };
 
 export type CardEmailOut = {
+  email_id: string;
   email: string | null;
   email_type: string | null;
   is_primary: boolean;
 };
 
 export type CardPhoneOut = {
+  phone_id: string;
   phone_e164: string | null;
   phone_raw: string | null;
   phone_type: string | null;
@@ -269,6 +275,10 @@ export type CardDetailOut = {
   lead_score: number | null;
   score_breakdown: Record<string, number | string> | null;
   scored_at: string | null;
+  // True when a field was corrected after this card's last score — a free
+  // rescore is allowed (never billed, never counted against the free
+  // allowance).
+  rescore_available: boolean;
   company: CardCompanyOut | null;
   emails: CardEmailOut[];
   phones: CardPhoneOut[];
@@ -353,6 +363,34 @@ export function uploadCards(
 
 export function getCard(cardId: string): Promise<CardDetailOut> {
   return request(`/cards/${cardId}`);
+}
+
+export type CorrectableFieldName =
+  | "full_name"
+  | "job_title"
+  | "address"
+  | "products_offered"
+  | "company_name"
+  | "email"
+  | "phone"
+  | "catalog_url";
+
+export type CardFieldCorrectionRequest = {
+  field_name: CorrectableFieldName;
+  corrected_value: string;
+  // Required (must be a CardEmail.email_id/CardPhone.phone_id on this card)
+  // when field_name is "email"/"phone"; omitted otherwise.
+  record_id?: string | null;
+};
+
+export function correctCardField(
+  cardId: string,
+  data: CardFieldCorrectionRequest
+): Promise<CardDetailOut> {
+  return request(`/cards/${cardId}/corrections`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
 }
 
 export function reprocessCard(cardId: string): Promise<CardOut> {
