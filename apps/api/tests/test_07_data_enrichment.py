@@ -89,6 +89,7 @@ from __future__ import annotations
 
 import io
 import uuid
+from datetime import datetime, timezone
 
 import anthropic
 import httpx
@@ -106,6 +107,11 @@ from app.models.company_enrichment import CompanyEnrichment
 from app.models.company_signals import CompanySignals
 from app.models.visiting_card import VisitingCard
 from app.services.enrichment_providers.firmographics_provider import FirmographicsResult
+from app.services.enrichment_providers.local_presence_provider import (
+    MarketplaceResult,
+    PlacesResult,
+    SupplierProfileResult,
+)
 from app.workers.card_processing import process_card
 from app.workers.enrichment_processing import enrich_company_task
 from conftest import create_verified_user
@@ -124,7 +130,12 @@ ALL_SIGNAL_COLUMNS = [
     "gem_tender_count", "gem_total_tender_value", "import_export_activity",
     "shipment_count_last_12m", "recent_news_signals", "google_rating",
     "google_review_count", "marketplace_vintage_years", "marketplace_verified_badge",
-    "marketplace_located_in_industrial_area",
+    "marketplace_located_in_industrial_area", "catalog_url",
+    "indiamart_rating", "indiamart_rating_count", "indiamart_member_since_year",
+    "indiamart_business_type", "indiamart_employee_count_band",
+    "indiamart_annual_turnover_band", "indiamart_year_established",
+    "indiamart_gst_number", "indiamart_gst_registration_year",
+    "indiamart_call_response_rate",
 ]
 
 
@@ -203,6 +214,45 @@ class _StaticFirmographicsProvider:
 
     def lookup_linkedin(self, company_name: str, website: str | None) -> FirmographicsResult:
         return self._result
+
+
+class _StaticLocalPresenceProvider:
+    """Returns fixed `lookup_marketplace`/`lookup_supplier_profile` results
+    regardless of input — used to simulate the IndiaMART cascade's two Apify
+    calls without touching any other provider's (stub, empty) behavior.
+    `lookup_supplier_profile` raises if `expect_supplier_profile_call` is
+    False, so a test can assert the second (billed) call is never made when
+    lookup_marketplace found no catalog_url."""
+
+    def __init__(
+        self,
+        marketplace_result: MarketplaceResult,
+        supplier_profile_result: SupplierProfileResult | None = None,
+        expect_supplier_profile_call: bool = True,
+    ) -> None:
+        self._marketplace_result = marketplace_result
+        self._supplier_profile_result = supplier_profile_result
+        self._expect_supplier_profile_call = expect_supplier_profile_call
+
+    def lookup_places(self, company_name: str, address: str | None):
+        return PlacesResult()
+
+    def lookup_marketplace(
+        self,
+        company_name: str,
+        email_domain: str | None = None,
+        website: str | None = None,
+        products_offered: str | None = None,
+        address: str | None = None,
+    ) -> MarketplaceResult:
+        return self._marketplace_result
+
+    def lookup_supplier_profile(self, catalog_url: str) -> SupplierProfileResult:
+        if not self._expect_supplier_profile_call:
+            raise AssertionError(
+                "lookup_supplier_profile must not be called when lookup_marketplace found no catalog_url"
+            )
+        return self._supplier_profile_result
 
 
 class _RaisingRegistryProvider:
@@ -486,6 +536,118 @@ def test_enrich_company_task_one_source_raising_does_not_abort_the_others(db_ses
     ).all()
     assert len(audit_rows) == 1, "the raising source must write zero audit rows"
     assert audit_rows[0].source == "linkedin", "only the succeeding source's audit row must exist"
+
+
+# ==========================================================================
+# 3b. IndiaMART supplier-profile lookup (#12) — a second, independent Apify
+#     call gated on lookup #11 (`indiamart`) having found a catalog_url in
+#     this same run.
+# ==========================================================================
+
+
+def test_enrich_company_task_skips_supplier_profile_lookup_when_no_catalog_url(
+    db_session, monkeypatch
+):
+    """lookup #11 finding no catalog_url must skip lookup #12 entirely — no
+    second (billed) Apify call, no indiamart_supplier_profile audit row, and
+    every column that call would have populated stays null."""
+    company_id = _create_pending_company(db_session)
+    _patch_summary_client(monkeypatch)
+
+    monkeypatch.setattr(
+        "app.services.enrichment_providers.local_presence_provider.get_local_presence_provider",
+        lambda: _StaticLocalPresenceProvider(
+            marketplace_result=MarketplaceResult(source_tag="indiamart", raw_payload={"empty": True}),
+            expect_supplier_profile_call=False,
+        ),
+    )
+
+    enrich_company_task(str(company_id))  # must not raise via the AssertionError guard above
+
+    db_session.expire_all()
+    signals = db_session.get(CompanySignals, company_id)
+    assert signals is not None
+    assert signals.catalog_url is None
+    for column in (
+        "marketplace_verified_badge", "marketplace_vintage_years", "indiamart_rating",
+        "indiamart_rating_count", "indiamart_member_since_year", "indiamart_business_type",
+        "indiamart_employee_count_band", "indiamart_annual_turnover_band",
+        "indiamart_year_established", "indiamart_gst_number",
+    ):
+        assert getattr(signals, column) is None, f"{column} must stay null — lookup #12 must never fire"
+
+    audit_rows = db_session.scalars(
+        select(CompanyEnrichment).where(CompanyEnrichment.company_id == company_id)
+    ).all()
+    assert [r.source for r in audit_rows] == ["indiamart"], (
+        "only the (empty) lookup #11 audit row should exist — no indiamart_supplier_profile row"
+    )
+
+
+def test_enrich_company_task_supplier_profile_lookup_populates_signals_when_catalog_url_found(
+    db_session, monkeypatch
+):
+    """lookup #11 finding a catalog_url must trigger lookup #12, which
+    populates the new indiamart_* columns plus closes phase 1's gap:
+    marketplace_verified_badge (from isVerifiedExporter) and
+    marketplace_vintage_years (derived from indiamart_member_since_year,
+    current_year - year) — asserted numerically, not just non-null, since a
+    sequencing bug here would silently leave vintage_years null forever."""
+    company_id = _create_pending_company(db_session)
+    _patch_summary_client(monkeypatch)
+
+    member_since_year = datetime.now(timezone.utc).year - 7
+    catalog_url = "https://www.indiamart.com/some-company/"
+    monkeypatch.setattr(
+        "app.services.enrichment_providers.local_presence_provider.get_local_presence_provider",
+        lambda: _StaticLocalPresenceProvider(
+            marketplace_result=MarketplaceResult(
+                catalog_url=catalog_url, source_tag="indiamart", raw_payload={"found": True}
+            ),
+            supplier_profile_result=SupplierProfileResult(
+                marketplace_verified_badge=True,
+                indiamart_rating=4.5,
+                indiamart_rating_count=128,
+                indiamart_member_since_year=member_since_year,
+                indiamart_business_type="Manufacturer",
+                indiamart_employee_count_band="11 to 25 People",
+                indiamart_annual_turnover_band="1 - 5 Cr",
+                indiamart_year_established="2010",
+                indiamart_gst_number="27AAAAA0000A1Z5",
+                indiamart_gst_registration_year=2019,
+                indiamart_call_response_rate="84%",
+                source_tag="indiamart_supplier_profile",
+                raw_payload={"items": [{"companyName": "Some Company"}]},
+            ),
+        ),
+    )
+
+    enrich_company_task(str(company_id))
+
+    db_session.expire_all()
+    signals = db_session.get(CompanySignals, company_id)
+    assert signals is not None
+    assert signals.catalog_url == catalog_url
+    assert signals.marketplace_verified_badge is True
+    assert signals.marketplace_vintage_years == 7, (
+        "must be derived as current_year - indiamart_member_since_year, read from the already-set "
+        "signals attribute (not the consumed data dict) — a sequencing bug here silently leaves this null"
+    )
+    assert signals.indiamart_rating == 4.5
+    assert signals.indiamart_rating_count == 128
+    assert signals.indiamart_member_since_year == member_since_year
+    assert signals.indiamart_business_type == "Manufacturer"
+    assert signals.indiamart_employee_count_band == "11 to 25 People"
+    assert signals.indiamart_annual_turnover_band == "1 - 5 Cr"
+    assert signals.indiamart_year_established == "2010"
+    assert signals.indiamart_gst_number == "27AAAAA0000A1Z5"
+    assert signals.indiamart_gst_registration_year == 2019
+    assert signals.indiamart_call_response_rate == "84%"
+
+    audit_rows = db_session.scalars(
+        select(CompanyEnrichment).where(CompanyEnrichment.company_id == company_id)
+    ).all()
+    assert sorted(r.source for r in audit_rows) == ["indiamart", "indiamart_supplier_profile"]
 
 
 # ==========================================================================

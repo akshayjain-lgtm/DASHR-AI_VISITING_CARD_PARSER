@@ -72,6 +72,21 @@ class CompanySignals(Base):
     marketplace_located_in_industrial_area: Mapped[bool | None] = mapped_column(Boolean)
     catalog_url: Mapped[str | None]
 
+    # IndiaMART supplier-profile page (Apify "IndiaMart Scraper" actor,
+    # mode=supplierProfile, queried against catalog_url above)
+    indiamart_rating: Mapped[Decimal | None] = mapped_column(Numeric)
+    indiamart_rating_count: Mapped[int | None]
+    indiamart_member_since_year: Mapped[int | None]
+    indiamart_business_type: Mapped[str | None]
+    indiamart_employee_count_band: Mapped[str | None]
+    indiamart_annual_turnover_band: Mapped[str | None]
+    indiamart_year_established: Mapped[str | None]
+    indiamart_gst_number: Mapped[str | None]
+    # Only ever observed live as a bare year (e.g. "2017"), never a full
+    # date — an int, not a fabricated Jan-1 calendar date.
+    indiamart_gst_registration_year: Mapped[int | None]
+    indiamart_call_response_rate: Mapped[str | None]
+
     # Set explicitly by enrichment_service.run_all_signal_lookups on every
     # upsert — no ORM-level onupdate= here, since that would be dead code
     # next to a call site that always overwrites it anyway.

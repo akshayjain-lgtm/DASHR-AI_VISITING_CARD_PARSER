@@ -93,6 +93,7 @@ def enrich_company_task(
         products_offered = None
         email_domain = None
         website = None
+        address = None
         if source_card_id is not None:
             source_card = db.get(VisitingCard, uuid.UUID(source_card_id))
             if source_card is not None:
@@ -101,6 +102,7 @@ def enrich_company_task(
                 products_offered = source_card.products_offered
                 email_domain = _card_email_domain(db, source_card.card_id)
                 website = source_card.website
+                address = source_card.address
 
         is_retry = self.request.retries > 0
         if not is_retry:
@@ -121,7 +123,7 @@ def enrich_company_task(
 
         try:
             signals, any_signal_found = enrichment_service.run_all_signal_lookups(
-                db, company, gst_number, email_domain, website, products_offered
+                db, company, gst_number, email_domain, website, products_offered, address
             )
             summary = enrichment_summary.generate_summary(company, signals)
         except Exception as exc:

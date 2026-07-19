@@ -1,7 +1,9 @@
-"""Regression coverage for local_presence_provider.py's relevance checks.
+"""Regression coverage for local_presence_provider.py's (and its sibling
+local_presence_url_utils.py's) relevance/parsing/validation checks.
 
-Two production incidents this guards against, both from trusting a fuzzy
-keyword match without cross-checking company identity:
+Production incidents this guards against, all from trusting either a fuzzy
+keyword match or an unverified actor-schema assumption without
+cross-checking against real data:
 1. Querying the (now-superseded) "thirdwatch/indiamart-supplier-scraper"
    actor directly with "The Tickle Toe (A brand by Pazu Products Pvt.
    Ltd.)" once returned an unrelated cosmetics supplier ("SR HERBAL CARE")
@@ -15,16 +17,40 @@ keyword match without cross-checking company identity:
    coincidentally keyword-matched. `_looks_like_same_company_by_url`
    checks the URL's own slug instead (IndiaMART's rendering of the
    seller's actual name), which doesn't share that weakness.
+3. `trustseal.indiamart.com` URLs (a "TrustSEAL member" verification page)
+   can pass every relevance check yet still be unscrapable by
+   `lookup_supplier_profile`'s second actor call — `_pick_best_indiamart_url`
+   prefers the standard `www.indiamart.com` domain when both are relevant.
+4. "AGGARWAL ENTERPRISES" (a very common business name) once resolved to a
+   same-named company in Kanpur even though the card's own address was in
+   Delhi — `_extract_city_tokens`/`_pick_best_indiamart_url`'s city
+   tie-break guards against this.
+5. The supplier-profile actor's `memberSince` field can come back as a
+   tenure duration ("3 yrs") rather than a 4-digit join year, and its
+   `gstNumber` field can carry a badge label ("TrustSEAL") instead of an
+   actual GSTIN — `_parse_member_since_year`/`_validate_gstin` guard
+   against both, confirmed against real live responses, not assumed from
+   the actor's declared (and, in both cases, incomplete) schema.
 """
+from datetime import datetime, timezone
+
 from app.services.enrichment_providers.local_presence_provider import (
     ApifyLocalPresenceProvider,
+    _parse_member_since_year,
+    _parse_year,
+    _pick_one_product,
+    _validate_gstin,
+)
+from app.services.enrichment_providers.local_presence_url_utils import (
+    _extract_city_tokens,
     _extract_legal_name,
     _find_indiamart_link_on_page,
     _find_policy_page_urls,
     _is_indiamart_profile_url,
     _is_indiamart_url,
+    _is_standard_indiamart_domain,
     _looks_like_same_company_by_url,
-    _pick_one_product,
+    _pick_best_indiamart_url,
 )
 
 
@@ -58,6 +84,143 @@ def test_is_indiamart_profile_url_rejects_proddetail_pages():
     assert not _is_indiamart_profile_url(
         "https://www.indiamart.com/proddetail/the-tickle-toe-baby-potty-chair-123.html"
     )
+
+
+def test_is_standard_indiamart_domain_accepts_bare_and_www():
+    assert _is_standard_indiamart_domain("https://www.indiamart.com/some-company/")
+    assert _is_standard_indiamart_domain("https://indiamart.com/some-company/")
+
+
+def test_is_standard_indiamart_domain_rejects_other_subdomains():
+    """Production incident: a trustseal.indiamart.com URL (a "TrustSEAL
+    member" verification page, confirmed live for a real company
+    "AGGARWAL ENTERPRISES") passed every relevance check yet turned out to
+    be unscrapable by lookup_supplier_profile's actor — this must be
+    ranked below a standard-domain alternative, never picked over one."""
+    assert not _is_standard_indiamart_domain("https://trustseal.indiamart.com/members/some-company")
+    assert not _is_standard_indiamart_domain("https://m.indiamart.com/some-company/")
+
+
+def test_pick_best_indiamart_url_prefers_standard_domain_over_trustseal():
+    urls = [
+        "https://trustseal.indiamart.com/members/aggarwalenterprises",
+        "https://www.indiamart.com/aggarwalenterprisesnewdelhi/profile.html",
+    ]
+    assert _pick_best_indiamart_url(urls) == (
+        "https://www.indiamart.com/aggarwalenterprisesnewdelhi/profile.html"
+    )
+
+
+def test_pick_best_indiamart_url_prefers_profile_over_proddetail_before_domain():
+    """Profile-vs-proddetail is still the primary ranking — a proddetail
+    page on the standard domain must not beat a profile page on a
+    non-standard subdomain, matching the existing (unchanged) priority."""
+    urls = [
+        "https://www.indiamart.com/proddetail/some-product.html",
+        "https://trustseal.indiamart.com/members/some-company",
+    ]
+    assert _pick_best_indiamart_url(urls) == "https://trustseal.indiamart.com/members/some-company"
+
+
+def test_pick_best_indiamart_url_returns_none_for_empty_list():
+    assert _pick_best_indiamart_url([]) is None
+
+
+def test_lookup_marketplace_prefers_www_over_trustseal_among_relevant_candidates(monkeypatch):
+    """End-to-end through lookup_marketplace: when a search result offers
+    both a trustseal.indiamart.com match and a www.indiamart.com match for
+    the same relevant company, the standard-domain one must be chosen —
+    the exact production scenario found for "AGGARWAL ENTERPRISES"."""
+    payload = [{
+        "organicResults": [
+            {"url": "https://trustseal.indiamart.com/members/aggarwalenterprises"},
+            {"url": "https://www.indiamart.com/aggarwalenterprisesnewdelhi/profile.html"},
+        ],
+    }]
+    monkeypatch.setattr(
+        "app.services.enrichment_providers.local_presence_provider.httpx.post",
+        lambda *a, **k: _FakeResponse(payload),
+    )
+    result = ApifyLocalPresenceProvider().lookup_marketplace("AGGARWAL ENTERPRISES")
+    assert result.catalog_url == "https://www.indiamart.com/aggarwalenterprisesnewdelhi/profile.html"
+
+
+def test_extract_city_tokens_reads_every_distinct_city_before_pincode():
+    """Indian postal addresses conventionally suffix the city with a hyphen
+    and 6-digit PIN code — this must extract every such city, not just the
+    first, since a card's address often lists more than one location
+    (e.g. an office address and a separate factory address in different
+    cities)."""
+    address = (
+        "Off.: 141, Jaynarayan Market, First Floor, Sadar Bazar, Delhi-110006; "
+        "Fact.: N-219, Sector - 1, Bawana Ind. Area, Mumbai-400001"
+    )
+    assert _extract_city_tokens(address) == ("delhi", "mumbai")
+
+
+def test_extract_city_tokens_dedupes_repeated_city_names():
+    """The same city repeated across multiple addresses on one card (e.g.
+    both office and factory in Delhi) must appear only once — a duplicate
+    token adds nothing to the city tie-break and would just be surprising
+    given the function's own contract of returning distinct cities."""
+    address = (
+        "Off.: 141, Jaynarayan Market, First Floor, Sadar Bazar, Delhi-110006; "
+        "Fact.: N-219, Sector - 1, Bawana Ind. Area, Delhi-110039"
+    )
+    assert _extract_city_tokens(address) == ("delhi",)
+
+
+def test_extract_city_tokens_returns_empty_for_missing_or_unrecognized_address():
+    assert _extract_city_tokens(None) == ()
+    assert _extract_city_tokens("") == ()
+    assert _extract_city_tokens("No PIN code anywhere in this text") == ()
+
+
+def test_pick_best_indiamart_url_prefers_matching_city_over_non_matching():
+    """Production incident: "AGGARWAL ENTERPRISES" (a very common business
+    name) once resolved to a same-named company in Kanpur even though the
+    card's own address was in Delhi — a same-city alternative was present
+    in the same result set but ranked second by Google, and the code took
+    the first relevant match with no location awareness at all."""
+    urls = [
+        "https://www.indiamart.com/aggarwalenterpriseskanpur/profile.html",
+        "https://www.indiamart.com/aggarwalenterprisesnewdelhi/profile.html",
+    ]
+    assert _pick_best_indiamart_url(urls, city_tokens=("delhi",)) == (
+        "https://www.indiamart.com/aggarwalenterprisesnewdelhi/profile.html"
+    )
+
+
+def test_pick_best_indiamart_url_falls_back_to_first_match_when_no_city_tokens():
+    """With no address/city info at all, behavior must be unchanged from
+    before this feature — first relevant match in the given order."""
+    urls = [
+        "https://www.indiamart.com/aggarwalenterpriseskanpur/profile.html",
+        "https://www.indiamart.com/aggarwalenterprisesnewdelhi/profile.html",
+    ]
+    assert _pick_best_indiamart_url(urls, city_tokens=()) == urls[0]
+
+
+def test_lookup_marketplace_prefers_matching_city_end_to_end(monkeypatch):
+    """End-to-end through lookup_marketplace with a real address passed:
+    the same-city candidate must be chosen over an equally name-relevant
+    candidate in a different city — the exact "AGGARWAL ENTERPRISES"
+    incident, this time with the address parameter that fixes it."""
+    payload = [{
+        "aiOverview": {"sources": [
+            {"url": "https://www.indiamart.com/aggarwalenterpriseskanpur/profile.html"},
+            {"url": "https://www.indiamart.com/aggarwalenterprisesnewdelhi/profile.html"},
+        ]},
+    }]
+    monkeypatch.setattr(
+        "app.services.enrichment_providers.local_presence_provider.httpx.post",
+        lambda *a, **k: _FakeResponse(payload),
+    )
+    result = ApifyLocalPresenceProvider().lookup_marketplace(
+        "AGGARWAL ENTERPRISES",
+        address="Off.: 141, Jaynarayan Market, Sadar Bazar, Delhi-110006",
+    )
+    assert result.catalog_url == "https://www.indiamart.com/aggarwalenterprisesnewdelhi/profile.html"
 
 
 def test_looks_like_same_company_by_url_matches_concatenated_slug():
@@ -322,6 +485,36 @@ def test_pick_one_product_handles_newline_separators_and_blank_input():
     assert _pick_one_product("   ") is None
 
 
+def test_pick_one_product_skips_business_type_preamble_before_of():
+    """Production incident: "Manufacturer, Importers, Traders of Toys" was
+    picking "Manufacturer" (a business-type descriptor, not a product) —
+    must pick "Toys", the actual product after "of", instead."""
+    assert _pick_one_product("Manufacturer, Importers, Traders of Toys") == "Toys"
+    assert _pick_one_product("Manufacturer of Industrial Pumps, Valves") == "Industrial Pumps"
+    assert _pick_one_product("Wholesaler, Retailer of Electronics") == "Electronics"
+
+
+def test_pick_one_product_unaffected_when_no_of_present():
+    """No "of" in the text at all — behavior must stay exactly as before
+    (first comma-separated item), not accidentally match "of" inside a
+    product word like "office"."""
+    assert _pick_one_product("Potty chairs, toy organizers") == "Potty chairs"
+    assert _pick_one_product("Office furniture, Chairs") == "Office furniture"
+
+
+def test_pick_one_product_skips_generic_business_type_words_with_no_of():
+    """Same production incident, without an "of" to split on at all —
+    every leading business-type/role word must still be skipped in favor
+    of the first actual product."""
+    assert _pick_one_product("Manufacturer, Trader, Toys") == "Toys"
+    assert _pick_one_product("Importer, Wholesaler, Distributor, Electronics") == "Electronics"
+    assert _pick_one_product("Dealer\nSupplier\nAuto Parts") == "Auto Parts"
+
+
+def test_pick_one_product_returns_none_when_every_part_is_generic():
+    assert _pick_one_product("Manufacturer, Trader, Dealer") is None
+
+
 def test_domain_fallback_query_drops_tld(monkeypatch):
     """The domain search must query on the domain label alone
     ("thetickletoe"), never the full domain with its TLD
@@ -329,7 +522,7 @@ def test_domain_fallback_query_drops_tld(monkeypatch):
     search and IndiaMART slugs never include it."""
     captured_queries = []
 
-    def _fake_post(url, params=None, json=None, timeout=None):
+    def _fake_post(url, params=None, headers=None, json=None, timeout=None):
         captured_queries.append(json["queries"])
         return _FakeResponse([{"organicResults": []}])
 
@@ -375,7 +568,7 @@ def test_lookup_marketplace_finds_legal_name_via_policy_page_then_retries(monkey
     def _fake_fetch_html(url):
         return policy_html if "privacy-policy" in url else homepage_html
 
-    def _fake_post(url, params=None, json=None, timeout=None):
+    def _fake_post(url, params=None, headers=None, json=None, timeout=None):
         query = json["queries"]
         if "Pazu Products Private Limited" in query:
             return _FakeResponse([{
@@ -399,13 +592,14 @@ def test_lookup_marketplace_finds_legal_name_via_policy_page_then_retries(monkey
     assert result.catalog_url == "https://www.indiamart.com/pazu-products-private-limited/"
 
 
-def test_lookup_marketplace_last_resort_searches_name_plus_product(monkeypatch):
-    """Every earlier step fails (no email_domain/website), but
-    products_offered has a product name to append — that combined search
-    must be tried before giving up entirely."""
+def test_lookup_marketplace_step1_combines_name_and_product_targeting_catalogue(monkeypatch):
+    """Step 1 now combines the company name with one product off the card
+    (when there is one) and targets the catalogue page directly — this
+    must be the very first query tried, not a last resort reached only
+    after every other step fails."""
     captured_queries = []
 
-    def _fake_post(url, params=None, json=None, timeout=None):
+    def _fake_post(url, params=None, headers=None, json=None, timeout=None):
         query = json["queries"]
         captured_queries.append(query)
         if "potty chair" in query.lower():
@@ -423,7 +617,57 @@ def test_lookup_marketplace_last_resort_searches_name_plus_product(monkeypatch):
         "The Tickle Toe", products_offered="Potty chairs, toy organizers"
     )
     assert result.catalog_url == "https://www.indiamart.com/the-tickle-toe-noida/"
-    assert any("potty chairs" in q.lower() for q in captured_queries)
+    assert len(captured_queries) == 1, "must succeed on the very first (step 1) query, not fall through the cascade"
+    assert captured_queries[0] == '"The Tickle Toe" Potty chairs IndiaMart Catalogue Profile'
+
+
+def test_lookup_marketplace_step1_falls_back_to_plain_name_when_no_product(monkeypatch):
+    """With no products_offered, step 1 must use the plain "{name} IndiaMart"
+    phrasing unchanged — the product/catalogue combination only applies
+    when the card actually captured a product."""
+    captured_queries = []
+
+    def _fake_post(url, params=None, headers=None, json=None, timeout=None):
+        captured_queries.append(json["queries"])
+        return _FakeResponse([{"organicResults": []}])
+
+    monkeypatch.setattr(
+        "app.services.enrichment_providers.local_presence_provider.httpx.post", _fake_post
+    )
+    ApifyLocalPresenceProvider().lookup_marketplace("The Tickle Toe")
+    assert captured_queries[0] == '"The Tickle Toe" IndiaMart'
+
+
+def test_lookup_marketplace_reaches_last_resort_when_step1_catalogue_phrasing_misses(monkeypatch):
+    """Every step fails with step 1's catalogue-targeted phrasing (no
+    email_domain/website to unlock steps 2-4), but step 5's plainer
+    "{name} {product}" IndiaMart phrasing (no "catalogue" keyword) still
+    succeeds — the cascade must still reach and try step 5, proving the two
+    product-combining steps are distinct attempts, not just one."""
+    captured_queries = []
+
+    def _fake_post(url, params=None, headers=None, json=None, timeout=None):
+        query = json["queries"]
+        captured_queries.append(query)
+        if "potty chair" in query.lower() and "catalogue" not in query.lower():
+            return _FakeResponse([{
+                "organicResults": [
+                    {"url": "https://www.indiamart.com/the-tickle-toe-noida/"},
+                ],
+            }])
+        return _FakeResponse([{"organicResults": []}])
+
+    monkeypatch.setattr(
+        "app.services.enrichment_providers.local_presence_provider.httpx.post", _fake_post
+    )
+    result = ApifyLocalPresenceProvider().lookup_marketplace(
+        "The Tickle Toe", products_offered="Potty chairs, toy organizers"
+    )
+    assert result.catalog_url == "https://www.indiamart.com/the-tickle-toe-noida/"
+    assert any("catalogue" in q.lower() for q in captured_queries), "step 1 must still have been tried"
+    assert any("potty chairs" in q.lower() and "catalogue" not in q.lower() for q in captured_queries), (
+        "step 5's plainer phrasing must be the one that ultimately succeeded"
+    )
 
 
 def test_lookup_marketplace_skips_website_and_product_fallbacks_when_name_search_succeeds(
@@ -451,3 +695,150 @@ def test_lookup_marketplace_skips_website_and_product_fallbacks_when_name_search
         products_offered="Potty chairs",
     )
     assert result.catalog_url == "https://www.indiamart.com/the-tickle-toe-noida/"
+
+
+# ==========================================================================
+# lookup_supplier_profile: the second, independent Apify actor ("IndiaMart
+# Scraper", g74tjdx6IthmoJoyO, mode=supplierProfile), queried directly
+# against a catalog_url already found by lookup_marketplace.
+# ==========================================================================
+
+
+def test_parse_member_since_year_extracts_four_digit_year():
+    assert _parse_member_since_year("2015") == 2015
+    assert _parse_member_since_year("Member Since 2015") == 2015
+
+
+def test_parse_member_since_year_handles_duration_format(monkeypatch):
+    """Production incident: confirmed live against a real supplier
+    ("AGGARWAL ENTERPRISES") that memberSince can come back as a tenure
+    duration (e.g. "3 yrs") rather than a 4-digit join year, even though the
+    actor's own declared schema describes it as "Year the supplier joined
+    IndiaMart". The original 4-digit-year-only parser silently dropped this
+    format (returned None), which in turn left marketplace_vintage_years
+    null forever for any supplier reporting tenure this way."""
+    fixed_now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        "app.services.enrichment_providers.local_presence_provider.datetime",
+        type("_FixedDatetime", (), {"now": staticmethod(lambda tz=None: fixed_now)}),
+    )
+    assert _parse_member_since_year("3 yrs") == 2023
+    assert _parse_member_since_year("1 yr") == 2025
+    assert _parse_member_since_year("10 years") == 2016
+
+
+def test_parse_member_since_year_returns_none_for_unparseable_or_missing_input():
+    assert _parse_member_since_year("Since forever") is None
+    assert _parse_member_since_year(None) is None
+    assert _parse_member_since_year("") is None
+
+
+def test_parse_year_extracts_bare_year():
+    """gstRegistrationDate is confirmed live to only ever carry a bare year
+    (e.g. "2017"), never a full date — this must extract it without
+    fabricating a month/day."""
+    assert _parse_year("2017") == 2017
+    assert _parse_year(None) is None
+    assert _parse_year("unknown") is None
+
+
+def test_validate_gstin_accepts_real_gstin_shape():
+    assert _validate_gstin("27AAAAA0000A1Z5") == "27AAAAA0000A1Z5"
+    assert _validate_gstin("27aaaaa0000a1z5") == "27aaaaa0000a1z5"
+
+
+def test_validate_gstin_rejects_non_gstin_values():
+    """Production incident: confirmed live against a real supplier
+    ("AGGARWAL ENTERPRISES") that gstNumber can come back as a badge label
+    ("TrustSEAL") instead of an actual GSTIN — this must never be stored or
+    displayed as if it were one."""
+    assert _validate_gstin("TrustSEAL") is None
+    assert _validate_gstin(None) is None
+    assert _validate_gstin("") is None
+
+
+def test_lookup_supplier_profile_maps_every_confirmed_field(monkeypatch):
+    """Happy path against a realistic mocked dataset item, shaped after a
+    real live response (memberSince as a duration, gstRegistrationDate as a
+    bare year, callResponseRate present) rather than the actor's originally
+    declared (incomplete) schema."""
+    payload = [{
+        "mode": "supplierProfile",
+        "companyName": "TechnoCart Online Services Pvt Ltd",
+        "supplierRating": 4.5,
+        "ratingCount": 128,
+        "memberSince": "5 yrs",
+        "businessType": "Manufacturer",
+        "employeeCount": "11 to 25 People",
+        "annualTurnover": "1 - 5 Cr",
+        "yearEstablished": "2010",
+        "isVerifiedExporter": True,
+        "gstNumber": "27AAAAA0000A1Z5",
+        "gstRegistrationDate": "2019",
+        "callResponseRate": "84%",
+        "scrapedAt": "2026-07-18T00:00:00Z",
+    }]
+    captured = {}
+
+    def _fake_post(url, params=None, headers=None, json=None, timeout=None):
+        captured["json"] = json
+        return _FakeResponse(payload)
+
+    monkeypatch.setattr(
+        "app.services.enrichment_providers.local_presence_provider.httpx.post", _fake_post
+    )
+    result = ApifyLocalPresenceProvider().lookup_supplier_profile(
+        "https://www.indiamart.com/technocartonlineservices/profile.html"
+    )
+    assert captured["json"]["mode"] == "supplierProfile"
+    assert captured["json"]["supplierUrls"] == [
+        "https://www.indiamart.com/technocartonlineservices/profile.html"
+    ]
+    assert result.indiamart_rating == 4.5
+    assert result.indiamart_rating_count == 128
+    assert result.indiamart_member_since_year == datetime.now(timezone.utc).year - 5
+    assert result.indiamart_business_type == "Manufacturer"
+    assert result.indiamart_employee_count_band == "11 to 25 People"
+    assert result.indiamart_annual_turnover_band == "1 - 5 Cr"
+    assert result.indiamart_year_established == "2010"
+    assert result.marketplace_verified_badge is True
+    assert result.indiamart_gst_number == "27AAAAA0000A1Z5"
+    assert result.indiamart_gst_registration_year == 2019
+    assert result.indiamart_call_response_rate == "84%"
+    assert result.source_tag == "indiamart_supplier_profile"
+    assert result.raw_payload == {"items": payload}
+
+
+def test_lookup_supplier_profile_rejects_invalid_gst_number(monkeypatch):
+    """Production incident, end-to-end through the real provider method:
+    gstNumber="TrustSEAL" (a badge label, confirmed live) must never end up
+    as indiamart_gst_number."""
+    payload = [{"gstNumber": "TrustSEAL"}]
+    monkeypatch.setattr(
+        "app.services.enrichment_providers.local_presence_provider.httpx.post",
+        lambda *a, **k: _FakeResponse(payload),
+    )
+    result = ApifyLocalPresenceProvider().lookup_supplier_profile(
+        "https://www.indiamart.com/some-company/"
+    )
+    assert result.indiamart_gst_number is None
+
+
+def test_lookup_supplier_profile_returns_all_none_on_empty_response(monkeypatch):
+    """A billed-but-empty response (page gone/blocked/deindexed) must not
+    raise, and must still carry a non-None raw_payload so _run_lookup writes
+    an audit row for the billed call even though it found nothing."""
+    monkeypatch.setattr(
+        "app.services.enrichment_providers.local_presence_provider.httpx.post",
+        lambda *a, **k: _FakeResponse([]),
+    )
+    result = ApifyLocalPresenceProvider().lookup_supplier_profile(
+        "https://www.indiamart.com/some-company/"
+    )
+    assert result.indiamart_rating is None
+    assert result.indiamart_member_since_year is None
+    assert result.marketplace_verified_badge is None
+    assert result.indiamart_gst_registration_year is None
+    assert result.indiamart_call_response_rate is None
+    assert result.source_tag == "indiamart_supplier_profile"
+    assert result.raw_payload == {"items": []}

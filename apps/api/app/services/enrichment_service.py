@@ -122,6 +122,7 @@ def run_all_signal_lookups(
     email_domain: str | None = None,
     website: str | None = None,
     products_offered: str | None = None,
+    address: str | None = None,
 ) -> tuple[CompanySignals, bool]:
     data: dict[str, Any] = {}
     name = company.name or ""
@@ -207,11 +208,27 @@ def run_all_signal_lookups(
     data.update(_run_lookup(
         db, company.company_id, "indiamart",
         lambda: local_presence_provider.get_local_presence_provider().lookup_marketplace(
-            name, email_domain, website or company.website, products_offered
+            name, email_domain, website or company.website, products_offered, address
         ),
         ["marketplace_vintage_years", "marketplace_verified_badge",
          "marketplace_located_in_industrial_area", "catalog_url"],
     ))
+
+    # 12. IndiaMART supplier-profile page (a second, distinct Apify actor) —
+    # only when lookup #11 found a catalog_url in this same run; never spend
+    # this second billed call chasing a URL we don't have.
+    if data.get("catalog_url"):
+        data.update(_run_lookup(
+            db, company.company_id, "indiamart_supplier_profile",
+            lambda: local_presence_provider.get_local_presence_provider().lookup_supplier_profile(
+                data["catalog_url"]
+            ),
+            ["marketplace_verified_badge", "indiamart_rating", "indiamart_rating_count",
+             "indiamart_member_since_year", "indiamart_business_type",
+             "indiamart_employee_count_band", "indiamart_annual_turnover_band",
+             "indiamart_year_established", "indiamart_gst_number",
+             "indiamart_gst_registration_year", "indiamart_call_response_rate"],
+        ))
 
     any_signal_found = any(value is not None for value in data.values())
 
@@ -225,6 +242,15 @@ def run_all_signal_lookups(
     signals.estimated_revenue_band = classify_revenue_band(
         signals.udyam_category, signals.paid_up_capital
     )
+    # marketplace_vintage_years is derived from the supplier-profile lookup's
+    # indiamart_member_since_year, same "bucketed here, not in the provider"
+    # convention as hiring_signal/estimated_revenue_band above. Reads
+    # signals.indiamart_member_since_year (already set by the setattr loop
+    # above), not data[...] — that dict is fully consumed by that loop.
+    if signals.indiamart_member_since_year is not None:
+        vintage = datetime.now(timezone.utc).year - signals.indiamart_member_since_year
+        if vintage >= 0:
+            signals.marketplace_vintage_years = vintage
     signals.updated_at = datetime.now(timezone.utc)
 
     return signals, any_signal_found

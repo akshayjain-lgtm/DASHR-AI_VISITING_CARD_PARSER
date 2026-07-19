@@ -1,225 +1,136 @@
 import re
-from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Protocol
-from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import httpx
 
 from app.core.config import settings
 from app.services import website_fetch
+from app.services.enrichment_providers.local_presence_url_utils import (
+    _MAX_MATCH_START_OFFSET,
+    _extract_city_tokens,
+    _find_indiamart_link_on_page,
+    _find_legal_name_via_policy_pages,
+    _is_indiamart_url,
+    _looks_like_same_company_by_url,
+    _pick_best_indiamart_url,
+    _unwrap_google_redirect_url,
+)
 
 _APIFY_RUN_SYNC_URL = "https://api.apify.com/v2/acts/{actor_path}/run-sync-get-dataset-items"
 
-_INDIAMART_DOMAIN = "indiamart.com"
+# Naming convention for the free-text parsers below: "parse_" coerces one
+# whole given string into a single typed value (_parse_year,
+# _parse_member_since_year); "pick_" chooses one item among several
+# already-split candidates (_pick_one_product); "validate_" shape-checks a
+# value without transforming it (_validate_gstin). "extract_"
+# (_extract_city_tokens, in local_presence_url_utils.py) is reserved for
+# pulling zero-or-more matches out of a larger text, not a single value —
+# a different job from "parse_", even though both operate on free text.
+_PRODUCTS_OFFERED_OF_RE = re.compile(r"\bof\b", re.IGNORECASE)
 
-# How close to the start of a candidate URL's slug the query's earliest
-# matched word must begin. IndiaMART slugs (both storefront-profile and
-# proddetail) consistently lead with the seller's/product's own name before
-# appending descriptive suffixes (category, color, size, a legal suffix
-# like "opc"/"pvt-ltd") — a match near the front is strong evidence this is
-# genuinely the queried company, while a match buried deep in an
-# otherwise-unrelated slug is not.
-#
-# This replaced an earlier length-*ratio* threshold that turned out to be
-# the wrong signal: querying "DASHR" once matched
-# "national-sports-games-jalandhar" (an unrelated supplier — "dashr"
-# doesn't even appear in that slug, rejected regardless of which check is
-# used), which was mistakenly generalized into rejecting ANY short query
-# word that doesn't dominate a long slug by length. That broke a genuine
-# match: "dashrmaterialhandlingsolutions-opc", a real IndiaMART account for
-# "Dashr Material Handling Solutions OPC" — "dashr" is only ~15% of that
-# slug's length, but it's the company's own name leading its own (legally
-# suffixed) slug, not a coincidental mention. Position, not length share,
-# is what actually distinguishes the two cases.
-_MAX_MATCH_START_OFFSET = 15
-
-
-def _unwrap_google_redirect_url(url: str) -> str:
-    """Google's aiOverview.sources sometimes returns an image-search
-    redirect wrapper (e.g. "/url?sa=i&...&url=<encoded-real-url>&ved=...")
-    instead of a direct link — a bare relative path with no netloc, so
-    domain checks would silently reject the real (correct) target
-    underneath. Unwraps the embedded `url` query parameter when present;
-    returns the input unchanged otherwise."""
-    parsed = urlparse(url)
-    if parsed.path.endswith("/url"):
-        real_url = parse_qs(parsed.query).get("url")
-        if real_url:
-            return unquote(real_url[0])
-    return url
-
-
-# Legal-entity suffixes and filler words stripped before comparing two
-# company names for relevance — without this, "The Tickle Toe" vs "The
-# Tickle Toe Pvt Ltd" would score as mismatched on "pvt"/"ltd" alone even
-# though they're the same company.
-_COMPANY_NAME_STOPWORDS = frozenset({
-    "the", "a", "an", "and", "of", "by", "brand",
-    "pvt", "private", "ltd", "limited", "llp", "inc", "incorporated",
-    "co", "company", "corp", "corporation",
+# Business-type/role descriptors, not products — a products_offered value
+# consisting only of these (e.g. "Manufacturer, Trader, Toys" with no "of")
+# must still resolve to the real product ("Toys"), never one of these
+# words. Covers both singular and plural forms.
+_GENERIC_BUSINESS_TYPE_WORDS = frozenset({
+    "manufacturer", "manufacturers", "trader", "traders", "importer",
+    "importers", "exporter", "exporters", "business", "businesses",
+    "seller", "sellers", "dealer", "dealers", "deals", "distributor",
+    "distributors", "wholesaler", "wholesalers", "retailer", "retailers",
+    "supplier", "suppliers", "vendor", "vendors",
 })
-
-
-def _significant_words(name: str) -> set[str]:
-    words = re.findall(r"[a-z0-9]+", name.lower())
-    significant = {w for w in words if w not in _COMPANY_NAME_STOPWORDS}
-    return significant or set(words)
-
-
-def _looks_like_same_company_by_url(
-    query_name: str, url: str, max_start_offset: int = _MAX_MATCH_START_OFFSET
-) -> bool:
-    """Cross-checks a candidate IndiaMART URL against the queried company
-    name before trusting it as catalog_url. Two conditions, both required:
-    1. At least half of the query's significant words (legal-entity
-       suffixes/filler words excluded) must appear somewhere in the URL's
-       path. Substring-based, not word-boundary based, since an IndiaMART
-       storefront slug is a concatenated string (e.g.
-       "/technocartonlineservices/") with no natural word separators.
-    2. The earliest of those matches must begin within `max_start_offset`
-       characters of the slug's start — see `_MAX_MATCH_START_OFFSET`'s
-       docstring for why position, not a length ratio, is the right signal
-       here, and the real production case (DASHR/Material Handling
-       Solutions) that a length-ratio version of this check used to break.
-
-    Deliberately checks the URL, not a result's title/description text —
-    confirmed in production that title/description is unreliable here:
-    querying "DASHR" once matched an unrelated supplier ("National Sports &
-    Games") purely because their listing's description happened to mention
-    a product literally named "Dashr Timing Gates". The URL slug is
-    IndiaMART's own rendering of the seller's name, not a page's freeform
-    incidental keyword mentions, so it's a cleaner identity signal."""
-    query_words = _significant_words(query_name)
-    if not query_words:
-        return True
-    # "/proddetail/" is a fixed administrative route segment on every
-    # product-listing URL, not part of any seller's own name — stripped
-    # before measuring position so its 10 characters don't eat into
-    # max_start_offset's budget for where the seller's name actually starts.
-    path = urlparse(url).path.lower().replace("/proddetail/", "/")
-    path_slug = re.sub(r"[^a-z0-9]", "", path)
-    if not path_slug:
-        return False
-    matched_words = [word for word in query_words if word in path_slug]
-    if len(matched_words) < max(1, len(query_words) // 2):
-        return False
-    earliest_offset = min(path_slug.index(word) for word in matched_words)
-    return earliest_offset <= max_start_offset
-
-
-def _is_indiamart_url(url: str) -> bool:
-    host = urlparse(url).netloc.lower()
-    return host == _INDIAMART_DOMAIN or host.endswith("." + _INDIAMART_DOMAIN)
-
-
-def _is_indiamart_profile_url(url: str) -> bool:
-    """True for a storefront/profile-style IndiaMART URL (e.g.
-    indiamart.com/some-company-slug/) — false for a single product-listing
-    page (indiamart.com/proddetail/...). Preferred over a proddetail match
-    since the catalogue itself, not one product within it, is what
-    catalog_url is meant to represent."""
-    return _is_indiamart_url(url) and "/proddetail/" not in urlparse(url).path
-
-
-# --- Website-scrape fallbacks (used once the Google-search-based lookups
-# below find nothing) -------------------------------------------------------
-
-_LINK_RE = re.compile(r'<a\s[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
-_POLICY_LINK_KEYWORDS = ("terms", "privacy")
-# Cap on how many Terms/Privacy pages get fetched per company — a homepage
-# can link the same policy page from several nav locations; each fetch is a
-# real HTTP call, so this bounds the cost of a company whose site has many
-# such links.
-_MAX_POLICY_PAGES_TO_CHECK = 2
-
-# Legal-entity suffixes a company's own Terms/Privacy Policy page almost
-# always states its full registered name next to (e.g. "operated by Acme
-# Industries Private Limited") — used to recover the company's exact legal
-# name when the card's own extracted name is a trade/brand name that
-# doesn't match anything on IndiaMART.
-_LEGAL_SUFFIXES = (
-    "Private Limited", "Pvt. Ltd.", "Pvt Ltd", "LLP", "Limited", "Ltd.",
-    "Inc.", "Pte. Ltd.", "Pte Ltd", "Corporation", "Corp.",
-)
-_LEGAL_NAME_RE = re.compile(
-    r"\b([A-Z][A-Za-z&,.'\-]*(?:\s+[A-Z][A-Za-z&,.'\-]*){0,5}\s+(?:"
-    + "|".join(re.escape(suffix) for suffix in _LEGAL_SUFFIXES)
-    + r"))"
-)
-
-
-def _extract_links(html: str, base_url: str) -> list[tuple[str, str]]:
-    """Returns (absolute_url, visible_text) for every `<a href>` in html,
-    resolved against base_url. Regex-based, matching this codebase's
-    existing HTML-handling convention (industry_classification.py's
-    tag-stripping) rather than adding a parser dependency."""
-    links = []
-    for match in _LINK_RE.finditer(html):
-        href, inner_html = match.group(1), match.group(2)
-        try:
-            absolute_url = urljoin(base_url, href)
-        except ValueError:
-            continue
-        links.append((absolute_url, website_fetch.strip_html_tags(inner_html)))
-    return links
-
-
-def _find_indiamart_link_on_page(html: str, base_url: str) -> str | None:
-    """A company's own website linking to its IndiaMART storefront is
-    inherently trustworthy (it's their own site linking to their own
-    listing) — no relevance cross-check needed here, unlike a Google-search
-    candidate that could belong to anyone."""
-    candidate_urls = [url for url, _text in _extract_links(html, base_url) if _is_indiamart_url(url)]
-    if not candidate_urls:
-        return None
-    profile_urls = [url for url in candidate_urls if _is_indiamart_profile_url(url)]
-    return profile_urls[0] if profile_urls else candidate_urls[0]
-
-
-def _find_policy_page_urls(html: str, base_url: str) -> list[str]:
-    return [
-        url
-        for url, text in _extract_links(html, base_url)
-        if any(keyword in f"{url} {text}".lower() for keyword in _POLICY_LINK_KEYWORDS)
-    ]
-
-
-def _extract_legal_name(text: str) -> str | None:
-    """Policy pages typically restate the registered legal name several
-    times — the most frequently repeated match is taken as the canonical
-    one, same "highest count wins" principle industry_classification.py
-    already uses for keyword scoring."""
-    matches = [m.strip() for m in _LEGAL_NAME_RE.findall(text)]
-    if not matches:
-        return None
-    return Counter(matches).most_common(1)[0][0]
-
-
-def _find_legal_name_via_policy_pages(html: str, base_url: str) -> str | None:
-    for policy_url in _find_policy_page_urls(html, base_url)[:_MAX_POLICY_PAGES_TO_CHECK]:
-        policy_html = website_fetch.fetch_html(policy_url)
-        if not policy_html:
-            continue
-        legal_name = _extract_legal_name(website_fetch.strip_html_tags(policy_html))
-        if legal_name:
-            return legal_name
-    return None
 
 
 def _pick_one_product(products_offered: str | None) -> str | None:
     """The card's products_offered is free text, often comma/newline
     separated (e.g. "Potty chairs, toy organizers, kids furniture") — takes
-    the first non-empty item as the one product name for the last-resort
-    search."""
+    the first non-empty, non-generic item as the one product name for the
+    last-resort search.
+
+    Production incident: confirmed live that this field is also commonly
+    phrased as a business-type preamble followed by the actual product(s)
+    after "of" (e.g. "Manufacturer, Importers, Traders of Toys") — without
+    handling this, the preamble's own first comma-separated word
+    ("Manufacturer", a business-type descriptor, not a product) would be
+    picked instead of "Toys", the one term that actually distinguishes this
+    company from every other same-named one. Two independent safeguards
+    handle this: text after the last standalone "of" is used when present
+    (peeling off "Manufacturer, Importers, Traders" entirely), and every
+    resulting comma/newline/semicolon-separated part is additionally
+    checked against `_GENERIC_BUSINESS_TYPE_WORDS` and skipped if it's
+    purely a business-type/role word rather than an actual product — this
+    second check also covers phrasing with no "of" at all (e.g.
+    "Manufacturer, Trader, Toys"). Returns None if every part turns out to
+    be generic (nothing else to search on), same as an empty/missing
+    field."""
     if not products_offered:
         return None
-    for part in re.split(r"[,\n;]", products_offered):
+    text = products_offered
+    of_matches = list(_PRODUCTS_OFFERED_OF_RE.finditer(text))
+    if of_matches:
+        text = text[of_matches[-1].end():]
+    for part in re.split(r"[,\n;]", text):
         part = part.strip()
-        if part:
+        if part and part.lower() not in _GENERIC_BUSINESS_TYPE_WORDS:
             return part
     return None
+
+
+_FOUR_DIGIT_YEAR_RE = re.compile(r"\b(\d{4})\b")
+_MEMBER_SINCE_DURATION_RE = re.compile(r"(\d+)\s*(?:yrs?|years?)\b", re.IGNORECASE)
+
+
+def _parse_year(value: str | None) -> int | None:
+    """Best-effort 4-digit year extraction for free-text fields that are
+    confirmed live to sometimes carry only a bare year (e.g.
+    gstRegistrationDate returning "2017", not a full date) — used instead of
+    fabricating a Jan-1 calendar date out of information we don't actually
+    have."""
+    if not value:
+        return None
+    match = _FOUR_DIGIT_YEAR_RE.search(value)
+    return int(match.group(1)) if match else None
+
+
+def _parse_member_since_year(member_since: str | None) -> int | None:
+    """The supplier-profile actor's `memberSince` field is inconsistent in
+    the wild — confirmed live against a real supplier that it can come back
+    as a tenure duration (e.g. "3 yrs") rather than a 4-digit join year (e.g.
+    "2015") the actor's own declared schema description ("Year the supplier
+    joined IndiaMart") implied. Returns the join year either way: a direct
+    4-digit year is used as-is (delegates to `_parse_year`, the same
+    4-digit-year extraction `gstRegistrationDate` parsing uses); a duration
+    is converted via `current_year - N`. None if neither pattern matches or
+    the field is absent. Never raises on malformed input, matching every
+    other best-effort provider parse in this module."""
+    year = _parse_year(member_since)
+    if year is not None:
+        return year
+    if not member_since:
+        return None
+    duration_match = _MEMBER_SINCE_DURATION_RE.search(member_since)
+    if duration_match:
+        return datetime.now(timezone.utc).year - int(duration_match.group(1))
+    return None
+
+
+_GSTIN_RE = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
+
+
+def _validate_gstin(value: str | None) -> str | None:
+    """Confirmed live that the supplier-profile actor's gstNumber field can
+    return a badge label (e.g. "TrustSEAL") instead of an actual GSTIN for
+    some suppliers — likely a mis-scrape of a nearby page element on
+    IndiaMART's side, not something fixable on ours. Returns the value
+    unchanged only when it matches a real GSTIN's fixed 15-character
+    format, None otherwise, so a bogus label is never stored or displayed
+    as if it were a GSTIN."""
+    if not value:
+        return None
+    return value if _GSTIN_RE.match(value.strip().upper()) else None
 
 
 @dataclass
@@ -254,6 +165,45 @@ class MarketplaceResult:
     raw_payload: dict | None = None
 
 
+@dataclass
+class SupplierProfileResult:
+    """The seller's own IndiaMART supplier-profile page (Apify "IndiaMart
+    Scraper" actor, id `g74tjdx6IthmoJoyO`, mode=supplierProfile), queried
+    directly against the `catalog_url` `lookup_marketplace` already
+    resolved. `marketplace_vintage_years` is deliberately **not** a field
+    here — it's derived in enrichment_service.py from
+    `indiamart_member_since_year`, the same convention that file already
+    uses for `hiring_signal`/`estimated_revenue_band`, not something a
+    provider computes itself.
+
+    `indiamart_gst_registration_year`/`indiamart_call_response_rate` were
+    originally shipped as permanent-null placeholders — the actor's
+    *declared* output schema had no such fields. Confirmed live against a
+    real supplier that the actor's actual response does carry both
+    (`gstRegistrationDate`/`callResponseRate`), so both are now real. The
+    registration date has only ever been observed as a bare year (e.g.
+    "2017"), never a full date, so `indiamart_gst_registration_year` is an
+    int, not a fabricated Jan-1 calendar date.
+
+    `indiamart_gst_number` is shape-validated (`_validate_gstin`) before
+    being set — confirmed live that this field can carry a badge label
+    (e.g. "TrustSEAL") instead of an actual GSTIN for some suppliers."""
+
+    marketplace_verified_badge: bool | None = None
+    indiamart_rating: Decimal | None = None
+    indiamart_rating_count: int | None = None
+    indiamart_member_since_year: int | None = None
+    indiamart_business_type: str | None = None
+    indiamart_employee_count_band: str | None = None
+    indiamart_annual_turnover_band: str | None = None
+    indiamart_year_established: str | None = None
+    indiamart_gst_number: str | None = None
+    indiamart_gst_registration_year: int | None = None
+    indiamart_call_response_rate: str | None = None
+    source_tag: str | None = None
+    raw_payload: dict | None = None
+
+
 class LocalPresenceProvider(Protocol):
     def lookup_places(self, company_name: str, address: str | None) -> PlacesResult: ...
     def lookup_marketplace(
@@ -262,11 +212,13 @@ class LocalPresenceProvider(Protocol):
         email_domain: str | None = None,
         website: str | None = None,
         products_offered: str | None = None,
+        address: str | None = None,
     ) -> MarketplaceResult: ...
+    def lookup_supplier_profile(self, catalog_url: str) -> SupplierProfileResult: ...
 
 
 class StubLocalPresenceProvider:
-    """Dev-only default: returns "no signal found" for both lookups."""
+    """Dev-only default: returns "no signal found" for every lookup."""
 
     def lookup_places(self, company_name: str, address: str | None) -> PlacesResult:
         return PlacesResult()
@@ -277,8 +229,12 @@ class StubLocalPresenceProvider:
         email_domain: str | None = None,
         website: str | None = None,
         products_offered: str | None = None,
+        address: str | None = None,
     ) -> MarketplaceResult:
         return MarketplaceResult()
+
+    def lookup_supplier_profile(self, catalog_url: str) -> SupplierProfileResult:
+        return SupplierProfileResult()
 
 
 class ApifyLocalPresenceProvider:
@@ -286,6 +242,14 @@ class ApifyLocalPresenceProvider:
     "apify/google-search-scraper" actor — Googles `"{company name}"
     "IndiaMart"` and reads the company's storefront URL off the results,
     rather than querying IndiaMART's own search directly.
+
+    `lookup_supplier_profile` is a second, independent Apify actor call —
+    the "IndiaMart Scraper" actor (`g74tjdx6IthmoJoyO`), queried in
+    `supplierProfile` mode directly against the `catalog_url`
+    `lookup_marketplace` found — pulling the seller's own profile-page data
+    (rating, tenure, business type, turnover/employee bands, GST number).
+    See `SupplierProfileResult`'s docstring for exactly what it does and
+    doesn't return.
 
     Superseded IndiaMART-actor-direct approach (thirdwatch/indiamart-
     supplier-scraper): that actor's own search is a keyword-fuzzy match over
@@ -316,7 +280,11 @@ class ApifyLocalPresenceProvider:
     — same "never trust a fuzzy match blindly" rule as the superseded
     provider). Among relevant candidates, a storefront-style URL
     (`_is_indiamart_profile_url`) is preferred over a single
-    product-listing page.
+    product-listing page. (These URL-relevance/ranking helpers, plus the
+    website-scrape fallback helpers steps 3/4 below use, live in the
+    sibling `local_presence_url_utils.py` module — split out once this
+    file grew to mix URL ranking, website-scrape fallback, free-text
+    parsing, and the provider classes themselves.)
 
     Each of the two searches below (company name, then email domain) is
     itself retried once on the identical query if the first attempt finds
@@ -328,7 +296,14 @@ class ApifyLocalPresenceProvider:
 
     Full fallback cascade, each step only reached if every prior one comes
     up empty:
-    1. Company name (`_search_and_extract`, retried once on a miss).
+    1. Company name, combined with one product off the card
+       (`_pick_one_product`) when there is one, phrased to target the
+       catalogue page directly: `"{name}" {product} IndiaMart Catalogue
+       Profile` rather than a bare `"{name}" IndiaMart` — a product term
+       narrows Google's ranking toward the seller's actual catalogue page.
+       Falls back to the plain `"{name}" IndiaMart` phrasing when the card
+       has no captured product. Relevance is still checked against the
+       company name alone (`_search_and_extract`, retried once on a miss).
     2. Email domain, TLD stripped (e.g. "thetickletoe", not
        "thetickletoe.com" — the ".com"/".in" suffix adds nothing to the
        search and a plain word matches more IndiaMART slugs, which
@@ -349,15 +324,37 @@ class ApifyLocalPresenceProvider:
        Limited") — then retries the company-name search with that exact
        legal name instead of the card's (often a trade/brand name) extracted
        one.
-    5. Last resort: one product name off the card (`_pick_one_product`)
-       appended to the company/legal name in a fresh search — a company
-       name alone can be too generic, but "{name} {one product it sells}"
-       narrows Google's ranking toward the right listing.
+    5. Last resort: the same product step 1 already tried, retried now
+       against whatever legal name step 4 may have recovered instead of
+       the card's own (often a trade/brand name) company name, with a
+       plainer "{name} {product}" IndiaMart phrasing (no "catalogue"
+       keyword) — a second, differently-worded attempt for the cases where
+       step 1's catalogue-targeted phrasing and every step in between came
+       up empty but a legal name was found in the meantime.
     Each of steps 1/2/4/5 is its own `_search_and_extract` call (so each
     gets its own retry-once); step 3 is a single HTTP fetch, not a search,
     so no retry applies there. Every step this costs is a real, billed
     Apify call or website fetch — the cascade only advances on an actual
     miss, never proactively.
+
+    Whenever a step has multiple equally-relevant candidate URLs to choose
+    from (`_pick_best_indiamart_url`, used by both `_extract_catalog_url`
+    and `_find_indiamart_link_on_page`), the ranking is: (1) a storefront-
+    profile URL over a single product-listing page; (2) a candidate whose
+    URL slug mentions one of the card's own known cities
+    (`_extract_city_tokens`, parsed off the card's `address`) over one that
+    doesn't — production incident: "AGGARWAL ENTERPRISES" (a very common
+    business name) once resolved to a same-named company in Kanpur even
+    though the card's address was in Delhi, because Google's own result
+    ordering isn't location-aware and a same-city alternative was present
+    in the same result set but ranked second; (3) among still-tied
+    candidates, the standard `www.indiamart.com` domain over another
+    `indiamart.com` subdomain such as `trustseal.indiamart.com` (a
+    "TrustSEAL member" verification page). Confirmed live that a
+    `trustseal.indiamart.com` URL can pass every relevance check yet still
+    make `lookup_supplier_profile`'s second actor call return zero rows —
+    that actor's `supplierProfile` mode only knows how to scrape the
+    standard storefront URL shape.
 
     `lookup_places` (Google Maps) is unchanged from the stub — rendering
     Maps results needs a headless browser, out of scope for this pass (see
@@ -368,13 +365,26 @@ class ApifyLocalPresenceProvider:
     def lookup_places(self, company_name: str, address: str | None) -> PlacesResult:
         return PlacesResult()
 
-    def _search(self, query_term: str) -> dict | None:
+    def _search(self, query_term: str, suffix: str = " IndiaMart") -> dict | None:
+        """`query_term` is always the exact-phrase-quoted part of the query;
+        `suffix` is appended unquoted after it — defaults to the plain
+        " IndiaMart" every step but the first uses. Step 1 overrides this to
+        combine one product with a "catalogue"-targeted phrasing instead of
+        widening the quoted phrase itself, since quoting company-name-plus-
+        product together as one exact phrase would rarely match anything.
+
+        The Apify token is sent via the `Authorization` header, never a URL
+        query param — `httpx.HTTPStatusError`'s own `str()` includes the
+        full request URL, and `_run_lookup`'s broad exception logging would
+        otherwise write the live token to application logs in plaintext on
+        any Apify 4xx/5xx (a routine, easily-triggered condition, not an
+        edge case)."""
         actor_path = settings.apify_google_search_actor_id.replace("/", "~")
         response = httpx.post(
             _APIFY_RUN_SYNC_URL.format(actor_path=actor_path),
-            params={"token": settings.apify_api_token},
+            headers={"Authorization": f"Bearer {settings.apify_api_token}"},
             json={
-                "queries": f'"{query_term}" IndiaMart',
+                "queries": f'"{query_term}"{suffix}',
                 "resultsPerPage": 10,
                 "maxPagesPerQuery": 1,
             },
@@ -389,6 +399,7 @@ class ApifyLocalPresenceProvider:
         page: dict,
         relevance_name: str,
         max_start_offset: int = _MAX_MATCH_START_OFFSET,
+        city_tokens: tuple[str, ...] = (),
     ) -> str | None:
         candidate_urls = (
             [
@@ -413,14 +424,15 @@ class ApifyLocalPresenceProvider:
         if not relevant_urls:
             return None
 
-        profile_urls = [url for url in relevant_urls if _is_indiamart_profile_url(url)]
-        return profile_urls[0] if profile_urls else relevant_urls[0]
+        return _pick_best_indiamart_url(relevant_urls, city_tokens)
 
     def _search_and_extract(
         self,
         query_term: str,
         relevance_name: str,
         max_start_offset: int = _MAX_MATCH_START_OFFSET,
+        suffix: str = " IndiaMart",
+        city_tokens: tuple[str, ...] = (),
     ) -> tuple[str | None, dict | None]:
         """One search+extract attempt, retried once (identical query) if the
         first attempt finds no relevant match. Confirmed live that Google/the
@@ -432,10 +444,10 @@ class ApifyLocalPresenceProvider:
         raw_payload even when both attempts miss."""
         page = None
         for _ in range(2):
-            page = self._search(query_term)
+            page = self._search(query_term, suffix)
             if page is None:
                 continue
-            catalog_url = self._extract_catalog_url(page, relevance_name, max_start_offset)
+            catalog_url = self._extract_catalog_url(page, relevance_name, max_start_offset, city_tokens)
             if catalog_url is not None:
                 return catalog_url, page
         return None, page
@@ -446,9 +458,31 @@ class ApifyLocalPresenceProvider:
         email_domain: str | None = None,
         website: str | None = None,
         products_offered: str | None = None,
+        address: str | None = None,
     ) -> MarketplaceResult:
-        # Step 1: company name.
-        catalog_url, last_page = self._search_and_extract(company_name, company_name)
+        # Every search step below tie-breaks toward a candidate whose URL
+        # slug mentions one of the card's own known cities (extracted once
+        # here) when more than one otherwise-equally-relevant candidate is
+        # returned — see _extract_city_tokens/_pick_best_indiamart_url's
+        # docstrings for the "AGGARWAL ENTERPRISES" (Kanpur vs. Delhi)
+        # production incident this guards against.
+        city_tokens = _extract_city_tokens(address)
+
+        # Step 1: company name — combined with one product the card
+        # captured (when there is one) and phrased to target the seller's
+        # IndiaMart catalogue page specifically, since "{name}" {product}
+        # IndiaMart Catalogue Profile ranks the actual catalogue/profile
+        # page higher than a bare "{name}" IndiaMart query. Falls back to
+        # the plain "{name}" IndiaMart phrasing when there's no product to
+        # combine with. The company name itself stays the sole quoted
+        # (exact-phrase) term either way — only the unquoted suffix changes
+        # — and relevance is still checked against company_name alone, not
+        # the product.
+        product = _pick_one_product(products_offered)
+        step1_suffix = f" {product} IndiaMart Catalogue Profile" if product else " IndiaMart"
+        catalog_url, last_page = self._search_and_extract(
+            company_name, company_name, suffix=step1_suffix, city_tokens=city_tokens
+        )
         if catalog_url is not None:
             return MarketplaceResult(
                 catalog_url=catalog_url, source_tag="indiamart", raw_payload=last_page
@@ -458,7 +492,9 @@ class ApifyLocalPresenceProvider:
         # (both attempts) came up empty.
         if email_domain:
             domain_label = email_domain.split(".")[0]
-            catalog_url, domain_page = self._search_and_extract(domain_label, domain_label)
+            catalog_url, domain_page = self._search_and_extract(
+                domain_label, domain_label, city_tokens=city_tokens
+            )
             last_page = domain_page or last_page
             if catalog_url is not None:
                 return MarketplaceResult(
@@ -479,7 +515,9 @@ class ApifyLocalPresenceProvider:
                     )
                 legal_name = _find_legal_name_via_policy_pages(html, website)
                 if legal_name:
-                    catalog_url, legal_page = self._search_and_extract(legal_name, legal_name)
+                    catalog_url, legal_page = self._search_and_extract(
+                        legal_name, legal_name, city_tokens=city_tokens
+                    )
                     last_page = legal_page or last_page
                     if catalog_url is not None:
                         return MarketplaceResult(
@@ -487,12 +525,14 @@ class ApifyLocalPresenceProvider:
                         )
 
         # Step 5: last resort — company/legal name plus one product it
-        # sells, off the card.
-        product = _pick_one_product(products_offered)
+        # sells, off the card (same `product` step 1 already tried
+        # combining with the plain company name; this retries it against
+        # whatever legal_name step 4 may have found instead, with a plainer
+        # "IndiaMart" phrasing rather than step 1's catalogue-targeted one).
         if product:
             base_name = legal_name or company_name
             catalog_url, product_page = self._search_and_extract(
-                f"{base_name} {product}", base_name
+                f"{base_name} {product}", base_name, city_tokens=city_tokens
             )
             last_page = product_page or last_page
             if catalog_url is not None:
@@ -501,6 +541,51 @@ class ApifyLocalPresenceProvider:
                 )
 
         return MarketplaceResult(source_tag="indiamart", raw_payload=last_page)
+
+    def lookup_supplier_profile(self, catalog_url: str) -> SupplierProfileResult:
+        """Scrapes the seller's own IndiaMART supplier-profile page via the
+        `g74tjdx6IthmoJoyO` ("IndiaMart Scraper") actor's `supplierProfile`
+        mode, called directly against the exact storefront URL
+        `lookup_marketplace` already found — no search/guessing involved.
+        `actor_path` is used as-is (an opaque Apify actor id, unlike
+        `apify_google_search_actor_id`'s "org/name" form, so no
+        `.replace("/", "~")` is needed here).
+
+        Always sets `raw_payload` to a dict (never None), even when the
+        actor returns zero rows — this call is billed per-event regardless
+        of whether a row comes back, so `_run_lookup` must still write a
+        `CompanyEnrichment` audit row for it. Like `_search`, the token is
+        sent via the `Authorization` header, never a URL query param, so it
+        can never end up in an exception's stringified request URL."""
+        response = httpx.post(
+            _APIFY_RUN_SYNC_URL.format(actor_path=settings.apify_indiamart_scraper_actor_id),
+            headers={"Authorization": f"Bearer {settings.apify_api_token}"},
+            json={
+                "mode": "supplierProfile",
+                "supplierUrls": [catalog_url],
+                "maxResults": 1,
+                "maxConcurrency": 1,
+            },
+            timeout=settings.apify_request_timeout_seconds,
+        )
+        response.raise_for_status()
+        items = response.json()
+        item = items[0] if items else {}
+        return SupplierProfileResult(
+            marketplace_verified_badge=item.get("isVerifiedExporter"),
+            indiamart_rating=item.get("supplierRating"),
+            indiamart_rating_count=item.get("ratingCount"),
+            indiamart_member_since_year=_parse_member_since_year(item.get("memberSince")),
+            indiamart_business_type=item.get("businessType"),
+            indiamart_employee_count_band=item.get("employeeCount"),
+            indiamart_annual_turnover_band=item.get("annualTurnover"),
+            indiamart_year_established=item.get("yearEstablished"),
+            indiamart_gst_number=_validate_gstin(item.get("gstNumber")),
+            indiamart_gst_registration_year=_parse_year(item.get("gstRegistrationDate")),
+            indiamart_call_response_rate=item.get("callResponseRate"),
+            source_tag="indiamart_supplier_profile",
+            raw_payload={"items": items},
+        )
 
 
 def get_local_presence_provider() -> LocalPresenceProvider:

@@ -362,6 +362,21 @@ def _load_emails_and_phones(
     return emails, phones
 
 
+# Every CompanySignals column exposed on CardCompanyOut — kept as one list
+# so get_card_detail's null-safe "signals.field if signals else None"
+# mapping is a single loop instead of one hand-copied line per field.
+_COMPANY_SIGNAL_FIELDS = (
+    "linkedin_employee_count", "estimated_revenue_band", "gstin_verified",
+    "udyam_registered", "hiring_signal", "google_rating", "catalog_url",
+    "marketplace_verified_badge", "marketplace_vintage_years",
+    "indiamart_rating", "indiamart_rating_count", "indiamart_member_since_year",
+    "indiamart_business_type", "indiamart_employee_count_band",
+    "indiamart_annual_turnover_band", "indiamart_year_established",
+    "indiamart_gst_number", "indiamart_gst_registration_year",
+    "indiamart_call_response_rate",
+)
+
+
 def get_card_detail(db: Session, current_user: User, card_id: uuid.UUID) -> dict:
     card = get_visible_card(db, current_user, card_id)
     company = db.get(Company, card.company_id) if card.company_id else None
@@ -398,13 +413,7 @@ def get_card_detail(db: Session, current_user: User, card_id: uuid.UUID) -> dict
             "enrichment_status": company.enrichment_status,
             "summary": company.summary,
             "summary_generated_at": company.summary_generated_at,
-            "linkedin_employee_count": signals.linkedin_employee_count if signals else None,
-            "estimated_revenue_band": signals.estimated_revenue_band if signals else None,
-            "gstin_verified": signals.gstin_verified if signals else None,
-            "udyam_registered": signals.udyam_registered if signals else None,
-            "hiring_signal": signals.hiring_signal if signals else None,
-            "google_rating": signals.google_rating if signals else None,
-            "catalog_url": signals.catalog_url if signals else None,
+            **{field: getattr(signals, field) if signals else None for field in _COMPANY_SIGNAL_FIELDS},
         }
         if company
         else None,
