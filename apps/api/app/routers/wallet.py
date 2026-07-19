@@ -71,8 +71,15 @@ def recharge_wallet(
     except PaymentProviderError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    # Recomputed here (cheap/deterministic) rather than threaded back out of
+    # create_recharge_order's return value, so that function's return type
+    # stays the plain Razorpay order dict it already is.
+    cgst, sgst, gross = billing.compute_gst(data.amount_inr)
     return WalletRechargeOut(
         razorpay_order_id=order["id"],
         razorpay_key_id=settings.razorpay_key_id,
-        amount_inr=data.amount_inr,
+        net_amount_inr=data.amount_inr,
+        cgst_amount_inr=cgst,
+        sgst_amount_inr=sgst,
+        gross_amount_inr=gross,
     )

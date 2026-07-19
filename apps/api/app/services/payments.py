@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.user import User
 from app.models.wallet_transaction import WalletTransaction
-from app.services import billing, razorpay_client
+from app.services import billing, invoicing, razorpay_client
 from app.services.exceptions import (
     InvalidRechargeAmountError,
     InvalidRechargeRequestError,
@@ -58,13 +58,20 @@ def create_recharge_order(db: Session, user: User, amount_inr: Decimal) -> dict:
             f"amount_inr must be between {MIN_RECHARGE_AMOUNT_INR} and {MAX_RECHARGE_AMOUNT_INR}"
         )
     billing.get_wallet(db, user.user_id)
-    amount_paise = int(amount_inr * 100)
+    # GST is charged on top of the requested recharge amount — the wallet is
+    # credited only amount_inr (see handle_payment_captured below), while
+    # Razorpay actually collects amount_inr + GST. net_amount_inr travels in
+    # the order's notes (alongside user_id) so the webhook can recover the
+    # exact pre-tax figure to credit, independent of whatever gross amount
+    # Razorpay reports as captured.
+    _cgst, _sgst, gross_amount_inr = billing.compute_gst(amount_inr)
+    amount_paise = int(gross_amount_inr * 100)
     try:
         return _get_client().order.create(
             {
                 "amount": amount_paise,
                 "currency": "INR",
-                "notes": {"user_id": str(user.user_id)},
+                "notes": {"user_id": str(user.user_id), "net_amount_inr": str(amount_inr)},
             }
         )
     except razorpay.errors.BadRequestError as exc:
@@ -132,19 +139,26 @@ def handle_payment_captured(db: Session, payload: dict) -> None:
     payment = payload.get("payload", {}).get("payment", {}).get("entity", {})
     order_id = payment.get("order_id")
     payment_id = payment.get("id")
-    amount_paise = payment.get("amount")
+    # payment.amount is the GROSS, tax-inclusive figure Razorpay actually
+    # captured (amount_inr + GST, per create_recharge_order above) — never
+    # credited to the wallet directly. notes.net_amount_inr is the pre-tax
+    # figure the user actually requested and what the wallet must be
+    # credited; it's only ever used for logging/reconciliation below.
+    gross_amount_paise = payment.get("amount")
     notes = payment.get("notes")
     user_id_raw = notes.get("user_id") if isinstance(notes, dict) else None
+    net_amount_inr_raw = notes.get("net_amount_inr") if isinstance(notes, dict) else None
 
-    if not order_id or not payment_id or amount_paise is None or not user_id_raw:
+    if not order_id or not payment_id or gross_amount_paise is None or not user_id_raw or not net_amount_inr_raw:
         raise MalformedWebhookPayloadError(
             "payment.captured event is missing a required field "
-            "(order_id/payment_id/amount/notes.user_id)"
+            "(order_id/payment_id/amount/notes.user_id/notes.net_amount_inr)"
         )
 
     try:
         user_id = uuid.UUID(user_id_raw)
-        amount_inr = Decimal(amount_paise) / Decimal(100)
+        gross_amount_inr_from_payload = Decimal(gross_amount_paise) / Decimal(100)
+        net_amount_inr = Decimal(net_amount_inr_raw)
     except (ValueError, ArithmeticError, TypeError) as exc:
         raise MalformedWebhookPayloadError(
             f"Unusable payment.captured payload for order {order_id}: {exc}"
@@ -157,7 +171,7 @@ def handle_payment_captured(db: Session, payload: dict) -> None:
         return
 
     try:
-        _get_client().order.fetch(order_id)
+        order = _get_client().order.fetch(order_id)
     except razorpay.errors.BadRequestError:
         # Well-formed payload, but Razorpay doesn't recognize this
         # order_id on this account — nothing this server ever issued via
@@ -173,14 +187,53 @@ def handle_payment_captured(db: Session, payload: dict) -> None:
         logger.error("Razorpay order verification failed for %s: %s", order_id, exc)
         raise PaymentProviderError("Could not verify order with payment provider") from exc
 
+    # Defense in depth: cross-check the payload's self-reported amount/notes
+    # against the order record fetched fresh from Razorpay above (not
+    # trusted from the payload alone). Not exploitable today — the whole
+    # payload is already signature-verified — but guards against any future
+    # change to how notes/amount are threaded (e.g. an order.update() call
+    # added elsewhere) silently diverging from what actually gets credited.
+    order_notes = order.get("notes") if isinstance(order, dict) else None
+    order_net_amount_inr_raw = (
+        order_notes.get("net_amount_inr") if isinstance(order_notes, dict) else None
+    )
+    if order.get("amount") != gross_amount_paise or order_net_amount_inr_raw != net_amount_inr_raw:
+        raise MalformedWebhookPayloadError(
+            f"payment.captured payload for order {order_id} disagrees with the order's own "
+            "amount/notes on file with Razorpay"
+        )
+
+    logger.info(
+        "payment.captured for order %s: crediting net %s (gross collected %s)",
+        order_id,
+        net_amount_inr,
+        gross_amount_inr_from_payload,
+    )
+
     try:
-        billing.credit_wallet(
+        transaction = billing.credit_wallet(
             db,
             user_id,
-            amount_inr,
+            net_amount_inr,
             "recharge_credit",
             razorpay_order_id=order_id,
             razorpay_payment_id=payment_id,
         )
     except IntegrityError:
         db.rollback()
+        return
+
+    # Invoice generation must never roll back or fail an already-verified
+    # wallet credit — the payment was genuinely captured by Razorpay and the
+    # wallet already credited by this point, so a PDF/S3 failure here is
+    # logged and left for manual/retried generation later, not propagated
+    # (CLAUDE.md: never lose or reverse real money over a PDF bug).
+    try:
+        invoicing.generate_invoice_for_transaction(db, transaction)
+    except Exception:
+        logger.exception(
+            "Invoice generation failed for wallet_transaction_id=%s (order %s) — "
+            "wallet credit stands, invoice can be regenerated later",
+            transaction.wallet_transaction_id,
+            order_id,
+        )

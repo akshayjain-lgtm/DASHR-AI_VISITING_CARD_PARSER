@@ -232,10 +232,18 @@ class CannotTargetSelfError(Exception):
 class MalformedWebhookPayloadError(Exception):
     """Raised by payments.handle_payment_captured when a payment.captured
     event is missing required fields, or has fields that can't be parsed
-    (order_id/payment_id/amount/notes.user_id). The payload has already
-    passed signature verification by this point — this is a genuine
-    Razorpay event this app can't act on, not a forgery attempt — so it's
-    surfaced to the caller as 400 (malformed payload), never silently
-    treated as a no-op 200 and never allowed to crash into an unhandled
-    500. Distinct from an unrecognized-order-id or a different event type,
-    both of which remain legitimate 200 no-ops."""
+    (order_id/payment_id/amount/notes.user_id/notes.net_amount_inr). The
+    payload has already passed signature verification by this point — this
+    is a genuine Razorpay event this app can't act on, not a forgery
+    attempt — so it's surfaced to the caller as 400 (malformed payload),
+    never silently treated as a no-op 200 and never allowed to crash into
+    an unhandled 500. Distinct from an unrecognized-order-id or a different
+    event type, both of which remain legitimate 200 no-ops."""
+
+
+class InvoiceNotFoundError(Exception):
+    """Raised when a referenced invoice_id doesn't exist, or exists but
+    isn't visible to the caller (neither its owner nor an admin of its
+    org_id) — routers/invoices.py maps this to 404, never 403, so a
+    non-owner can't distinguish "doesn't exist" from "not yours" (mirrors
+    CardNotFoundError's same 404-not-403 treatment)."""

@@ -83,7 +83,7 @@ export default function WalletPage() {
       const razorpay = new window.Razorpay({
         key: order.razorpay_key_id,
         order_id: order.razorpay_order_id,
-        amount: Math.round(parseFloat(order.amount_inr) * 100),
+        amount: Math.round(parseFloat(order.gross_amount_inr) * 100),
         currency: order.currency,
         name: "DASHR AI",
         description: "Wallet recharge",
@@ -100,6 +100,12 @@ export default function WalletPage() {
   }
 
   const balance = wallet ? parseFloat(wallet.balance_inr) : 0;
+
+  // Client-side display estimate only — the authoritative GST breakdown is
+  // whatever createWalletRecharge() actually returns (used above in
+  // handleRecharge), never this value.
+  const parsedAmount = parseFloat(amount);
+  const gstPreview = Number.isFinite(parsedAmount) && parsedAmount > 0 ? parsedAmount * 1.18 : null;
 
   return (
     <div className="min-h-screen bg-white flex flex-col sm:flex-row">
@@ -151,6 +157,11 @@ export default function WalletPage() {
                 disabled={recharging}
                 className="w-36 border border-black/15 px-4 py-2.5 text-sm focus:outline-none focus:border-[#E65527] transition-colors bg-white disabled:opacity-60"
               />
+              {gstPreview != null && (
+                <p className="text-[11px] text-black/40 mt-1">
+                  + 18% GST → ₹{gstPreview.toLocaleString("en-IN", { maximumFractionDigits: 2 })} total
+                </p>
+              )}
             </div>
             <OBtn onClick={handleRecharge} disabled={loading || recharging} className="gap-2">
               {recharging ? "Starting…" : "Add Money"}

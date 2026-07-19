@@ -52,5 +52,12 @@ class WalletRechargeRequest(BaseModel):
 class WalletRechargeOut(BaseModel):
     razorpay_order_id: str
     razorpay_key_id: str
-    amount_inr: Decimal
+    # Pre-tax amount that will be credited to the wallet on capture.
+    net_amount_inr: Decimal
+    cgst_amount_inr: Decimal
+    sgst_amount_inr: Decimal
+    # What the Razorpay Order actually charges (net + GST) — the frontend
+    # must pass this (in paise) as the checkout widget's `amount`, since
+    # that's the figure the created Order was actually opened for.
+    gross_amount_inr: Decimal
     currency: Literal["INR"] = "INR"

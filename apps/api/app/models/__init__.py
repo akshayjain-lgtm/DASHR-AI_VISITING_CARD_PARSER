@@ -7,6 +7,7 @@ from app.models.company_signals import CompanySignals
 from app.models.exhibition import Exhibition
 from app.models.field_correction import FieldCorrection
 from app.models.free_action_allowance import FreeActionAllowance
+from app.models.invoice import Invoice
 from app.models.org_invite import OrgInvite
 from app.models.organization import Organization
 from app.models.phone_otp_verification import PhoneOtpVerification
@@ -36,4 +37,5 @@ __all__ = [
     "WalletTransaction",
     "FreeActionAllowance",
     "FieldCorrection",
+    "Invoice",
 ]
