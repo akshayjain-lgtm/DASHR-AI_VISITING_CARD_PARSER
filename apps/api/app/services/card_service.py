@@ -1,6 +1,6 @@
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Callable
 
 from fastapi import UploadFile
@@ -169,6 +169,8 @@ def list_cards(
     include_folded: bool = False,
     unassigned: bool = False,
     user_id: uuid.UUID | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
 ) -> list[dict]:
     stmt = scope_to_visible_users(
         select(VisitingCard, Company.name, Company.enrichment_status).outerjoin(
@@ -184,6 +186,14 @@ def list_cards(
     # "uploaded by" filter on the upload page.
     if user_id is not None:
         stmt = stmt.where(VisitingCard.user_id == user_id)
+    if start_date is not None:
+        stmt = stmt.where(VisitingCard.created_at >= start_date)
+    if end_date is not None:
+        # created_at is TIMESTAMPTZ — a plain `<= end_date` would exclude
+        # any time-of-day after midnight on end_date itself, so use an
+        # exclusive upper bound one day later instead. Mirrors
+        # analytics.py::_apply_shared_filters's identical date-range handling.
+        stmt = stmt.where(VisitingCard.created_at < end_date + timedelta(days=1))
     # unassigned=True (the "General capture" filter) takes priority over an
     # exhibition_id, which the caller never sends alongside it anyway — this
     # mirrors the "no exhibition" bucket in the upload page's exhibition

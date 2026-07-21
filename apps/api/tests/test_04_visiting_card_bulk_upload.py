@@ -11,12 +11,13 @@ against the implementation of `routers/cards.py`, `routers/exhibitions.py`,
   "Depends on" section documents that `exhibitions`/`visiting_cards` have no
   `org_id` column at all (scoped by `user_id` only), with admin-sees-org-member
   visibility implemented as an API-layer join rather than a stored column.
-  `02-user-registration` only ever produces `org_id=NULL, role=NULL` accounts,
-  and no conftest helper exists yet to put a user through an org-invite/admin
-  flow, so per the task's explicit instruction the admin-sees-org-members case
-  is covered only by one `pytest.mark.skip` placeholder (see bottom of file)
-  documenting *why* rather than silently omitting it — the primary, fully
-  covered case is a `member`/org-less user only ever seeing their own rows.
+  `02-user-registration` only ever produces `org_id=NULL, role=NULL` accounts
+  by itself, but `17-admin-user-management`'s invite/accept flow (reused here
+  via `_create_org_admin`/`_add_org_member`) puts a user through a real
+  org+admin/member setup, so the admin-sees-org-members case is covered by a
+  real test (`test_admin_sees_every_org_members_exhibitions_and_cards`, see
+  bottom of file) — not just the primary `member`/org-less-user-sees-only-
+  their-own-rows case.
 - `POST /cards/bulk-upload` — validates content-type + size + batch file count
   BEFORE uploading or inserting anything; any failure anywhere in the batch
   rejects the *whole* request with `400` and creates zero rows (no partial
@@ -84,6 +85,7 @@ from __future__ import annotations
 
 import io
 import uuid
+from datetime import date, datetime, timezone
 from urllib.parse import urlparse
 
 import pytest
@@ -95,7 +97,7 @@ from app.core.config import settings
 from app.main import app as fastapi_app
 from app.models.visiting_card import VisitingCard
 from app.workers.card_processing import process_card
-from conftest import create_verified_user
+from conftest import create_verified_user, unique_email
 
 
 # --------------------------------------------------------------------------
@@ -161,6 +163,39 @@ def _upload_files(
         data=data,
         files=[("files", (name, content, ctype)) for name, content, ctype in files],
     )
+
+
+def _create_org_admin(client: TestClient, fake_otp_provider, company_name="Filter Test Org", **overrides) -> dict:
+    """Mirrors test_17-admin-user-management.py's helper of the same name —
+    signing up with a non-blank company_name creates an Organization and
+    makes the signer its admin."""
+    user = create_verified_user(client, fake_otp_provider, company_name=company_name, **overrides)
+    _login(client, user)
+    return user
+
+
+def _add_org_member(
+    admin_client: TestClient,
+    member_client: TestClient,
+    fake_otp_provider,
+    fake_invite_email_provider,
+) -> dict:
+    """Invites a fresh email to the admin's org and accepts on member_client,
+    landing member_client logged in as a `role=member` user of that same
+    org — the real org+admin/member setup 16-dashboard-analytics's test file
+    left as a documented gap (no conftest helper existed for it at the
+    time); 17-admin-user-management added the invite/accept flow this
+    reuses."""
+    email = unique_email()
+    invite = admin_client.post("/orgs/invites", json={"email": email})
+    assert invite.status_code == 201, invite.text
+    token = fake_invite_email_provider.latest_token_for(email)
+
+    member = create_verified_user(member_client, fake_otp_provider, email=email)
+    _login(member_client, member)
+    accept = member_client.post(f"/orgs/invites/{token}/accept")
+    assert accept.status_code == 200, accept.text
+    return member
 
 
 def _forbid_storage_upload(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -692,6 +727,138 @@ def test_list_cards_with_malformed_exhibition_id_query_param_returns_422(client,
 
 
 # --------------------------------------------------------------------------
+# 8b. GET /cards — start_date/end_date filter (22-upload-dashboard-filters)
+# --------------------------------------------------------------------------
+
+
+def test_list_cards_filter_by_start_date_and_end_date(client, fake_otp_provider, db_session, jpeg_bytes):
+    _authenticated_user(client, fake_otp_provider)
+
+    in_range = _upload_files(client, [("in_range.jpg", jpeg_bytes, "image/jpeg")])
+    assert in_range.status_code == 201, in_range.text
+    in_range_id = uuid.UUID(in_range.json()["cards"][0]["card_id"])
+
+    out_of_range = _upload_files(client, [("out_of_range.jpg", jpeg_bytes, "image/jpeg")])
+    assert out_of_range.status_code == 201, out_of_range.text
+    out_of_range_id = uuid.UUID(out_of_range.json()["cards"][0]["card_id"])
+
+    in_range_row = db_session.get(VisitingCard, in_range_id)
+    in_range_row.created_at = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
+    db_session.add(in_range_row)
+    out_of_range_row = db_session.get(VisitingCard, out_of_range_id)
+    out_of_range_row.created_at = datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc)
+    db_session.add(out_of_range_row)
+    db_session.commit()
+
+    resp = client.get(
+        "/cards",
+        params={"start_date": date(2026, 6, 1).isoformat(), "end_date": date(2026, 6, 30).isoformat()},
+    )
+
+    assert resp.status_code == 200, resp.text
+    ids = {c["card_id"] for c in resp.json()}
+    assert str(in_range_id) in ids
+    assert str(out_of_range_id) not in ids, (
+        "start_date/end_date must exclude cards created outside the requested range"
+    )
+
+
+def test_list_cards_end_date_filter_includes_the_entire_end_date(
+    client, fake_otp_provider, db_session, jpeg_bytes
+):
+    """A card created late on end_date itself must not be excluded by an
+    off-by-one boundary — created_at is a timestamp, so a naive
+    `<= end_date` (interpreted as midnight) comparison would wrongly drop
+    any time-of-day after midnight on that date. Mirrors
+    test_16-dashboard-analytics.py's identical boundary test for
+    GET /analytics/dashboard."""
+    _authenticated_user(client, fake_otp_provider)
+
+    upload = _upload_files(client, [("late.jpg", jpeg_bytes, "image/jpeg")])
+    assert upload.status_code == 201, upload.text
+    card_id = uuid.UUID(upload.json()["cards"][0]["card_id"])
+
+    row = db_session.get(VisitingCard, card_id)
+    row.created_at = datetime(2026, 6, 30, 23, 45, tzinfo=timezone.utc)
+    db_session.add(row)
+    db_session.commit()
+
+    resp = client.get(
+        "/cards",
+        params={"start_date": date(2026, 6, 1).isoformat(), "end_date": date(2026, 6, 30).isoformat()},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert str(card_id) in {c["card_id"] for c in resp.json()}
+
+
+def test_list_cards_with_malformed_start_date_query_param_returns_422(client, fake_otp_provider):
+    _authenticated_user(client, fake_otp_provider)
+    resp = client.get("/cards", params={"start_date": "not-a-date"})
+    assert resp.status_code == 422, resp.text
+
+
+def test_list_cards_with_malformed_end_date_query_param_returns_422(client, fake_otp_provider):
+    _authenticated_user(client, fake_otp_provider)
+    resp = client.get("/cards", params={"end_date": "31-06-2026"})
+    assert resp.status_code == 422, resp.text
+
+
+# --------------------------------------------------------------------------
+# 8c. GET /cards — user_id ("uploaded by") filter (22-upload-dashboard-filters)
+# --------------------------------------------------------------------------
+
+
+def test_list_cards_filter_by_user_id_admin_narrows_to_one_member(
+    client, fake_otp_provider, fake_invite_email_provider, jpeg_bytes
+):
+    _create_org_admin(client, fake_otp_provider, company_name="Filter Org")
+    admin_upload = _upload_files(client, [("admin.jpg", jpeg_bytes, "image/jpeg")])
+    assert admin_upload.status_code == 201, admin_upload.text
+    admin_card_id = admin_upload.json()["cards"][0]["card_id"]
+
+    with TestClient(fastapi_app) as member_client:
+        member = _add_org_member(client, member_client, fake_otp_provider, fake_invite_email_provider)
+        member_upload = _upload_files(member_client, [("member.jpg", jpeg_bytes, "image/jpeg")])
+        assert member_upload.status_code == 201, member_upload.text
+        member_card_id = member_upload.json()["cards"][0]["card_id"]
+
+    # No filter: admin (scope_to_visible_users) already sees both their own
+    # and their org member's card.
+    unfiltered = client.get("/cards")
+    assert unfiltered.status_code == 200, unfiltered.text
+    unfiltered_ids = {c["card_id"] for c in unfiltered.json()}
+    assert {admin_card_id, member_card_id} <= unfiltered_ids
+
+    # user_id filter narrows down to just the member's card — this is the
+    # "Uploaded by" filter now shared by /dashboard and /upload.
+    filtered = client.get("/cards", params={"user_id": member["user_id"]})
+    assert filtered.status_code == 200, filtered.text
+    assert {c["card_id"] for c in filtered.json()} == {member_card_id}
+
+
+def test_list_cards_user_id_filter_never_leaks_another_users_cards_for_org_less_caller(
+    client, fake_otp_provider, jpeg_bytes
+):
+    _authenticated_user(client, fake_otp_provider)
+    own_upload = _upload_files(client, [("own.jpg", jpeg_bytes, "image/jpeg")])
+    assert own_upload.status_code == 201, own_upload.text
+
+    with TestClient(fastapi_app) as other_client:
+        other_user = _authenticated_user(other_client, fake_otp_provider)
+        other_upload = _upload_files(other_client, [("other.jpg", jpeg_bytes, "image/jpeg")])
+        assert other_upload.status_code == 201, other_upload.text
+        other_user_id = other_user["user_id"]
+
+    # An org-less caller's query is already self-scoped by
+    # scope_to_visible_users — passing another user's id must narrow to
+    # nothing, never widen visibility into someone else's cards.
+    resp = client.get("/cards", params={"user_id": other_user_id})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == []
+
+
+# --------------------------------------------------------------------------
 # 9. GET /cards — image_url shape
 # --------------------------------------------------------------------------
 
@@ -762,21 +929,42 @@ def test_process_card_task_with_unknown_card_id_does_not_raise():
 
 
 # --------------------------------------------------------------------------
-# Out of scope for this file (documented, not silently skipped) — see module
-# docstring and task instructions: admin-sees-org-members visibility needs an
-# org/admin signup path no conftest helper currently supports.
+# 11. Admin org-visibility for GET /exhibitions and GET /cards
+#     (22-upload-dashboard-filters). 17-admin-user-management's invite/accept
+#     flow (reused via _create_org_admin/_add_org_member above) makes the
+#     admin+member setup possible -- this was previously a documented skip
+#     in this file for lack of that helper.
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.skip(
-    reason=(
-        "Admin-sees-org-members visibility for GET /exhibitions and GET /cards requires "
-        "putting a user through an org + admin/member setup that no conftest helper "
-        "currently supports (02-user-registration only ever produces org_id=NULL, "
-        "role=NULL accounts). Per task instructions, this is documented as a deliberate "
-        "gap rather than fabricated via direct ORM row manipulation that would encode "
-        "assumptions about a future org-invite feature's implementation."
+def test_admin_sees_every_org_members_exhibitions_and_cards(
+    client, fake_otp_provider, fake_invite_email_provider, jpeg_bytes
+):
+    _create_org_admin(client, fake_otp_provider, company_name="Visibility Org")
+    admin_exhibition = client.post("/exhibitions", json={"name": "Admin's Expo"})
+    assert admin_exhibition.status_code == 201, admin_exhibition.text
+    admin_upload = _upload_files(client, [("admin.jpg", jpeg_bytes, "image/jpeg")])
+    assert admin_upload.status_code == 201, admin_upload.text
+    admin_card_id = admin_upload.json()["cards"][0]["card_id"]
+
+    with TestClient(fastapi_app) as member_client:
+        _add_org_member(client, member_client, fake_otp_provider, fake_invite_email_provider)
+        member_exhibition = member_client.post("/exhibitions", json={"name": "Member's Expo"})
+        assert member_exhibition.status_code == 201, member_exhibition.text
+        member_upload = _upload_files(member_client, [("member.jpg", jpeg_bytes, "image/jpeg")])
+        assert member_upload.status_code == 201, member_upload.text
+        member_card_id = member_upload.json()["cards"][0]["card_id"]
+
+    exhibitions = client.get("/exhibitions")
+    assert exhibitions.status_code == 200, exhibitions.text
+    exhibition_names = {e["name"] for e in exhibitions.json()}
+    assert {"Admin's Expo", "Member's Expo"} <= exhibition_names, (
+        "an admin must see every org member's exhibitions, not just their own"
     )
-)
-def test_admin_sees_every_org_members_exhibitions_and_cards():
-    pass
+
+    cards = client.get("/cards")
+    assert cards.status_code == 200, cards.text
+    card_ids = {c["card_id"] for c in cards.json()}
+    assert {admin_card_id, member_card_id} <= card_ids, (
+        "an admin must see every org member's cards, not just their own"
+    )

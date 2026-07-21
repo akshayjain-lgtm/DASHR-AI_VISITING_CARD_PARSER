@@ -181,13 +181,25 @@ def list_cards(
     # whatever scope_to_visible_users already allows, so a non-admin passing
     # someone else's id just gets an empty result, never a leak.
     user_id: uuid.UUID | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     cards = card_service.list_cards(
-        db, user, exhibition_id, status, limit, offset, include_folded, unassigned, user_id
+        db,
+        user,
+        exhibition_id,
+        status,
+        limit,
+        offset,
+        include_folded,
+        unassigned,
+        user_id,
+        start_date,
+        end_date,
     )
     return [CardOut.model_validate(c) for c in cards]
 

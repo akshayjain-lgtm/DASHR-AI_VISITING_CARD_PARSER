@@ -669,6 +669,10 @@ export function listCards(
     // Admin-only "uploaded by" filter — ignored server-side (scoped down to
     // nothing) if the caller isn't an admin.
     user_id?: string;
+    // Date-range filter on VisitingCard.created_at — same semantics as
+    // getDashboardAnalytics's start_date/end_date.
+    start_date?: string;
+    end_date?: string;
     limit?: number;
     offset?: number;
   } = {}
@@ -679,6 +683,8 @@ export function listCards(
   if (params.include_folded) query.set("include_folded", "true");
   if (params.unassigned) query.set("unassigned", "true");
   if (params.user_id) query.set("user_id", params.user_id);
+  if (params.start_date) query.set("start_date", params.start_date);
+  if (params.end_date) query.set("end_date", params.end_date);
   if (params.limit != null) query.set("limit", String(params.limit));
   if (params.offset != null) query.set("offset", String(params.offset));
   const qs = query.toString();
@@ -709,12 +715,20 @@ export type DashboardAnalyticsOut = {
 };
 
 export function getDashboardAnalytics(
-  params: { exhibitionIds?: string[]; startDate?: string; endDate?: string } = {}
+  params: {
+    exhibitionIds?: string[];
+    startDate?: string;
+    endDate?: string;
+    // Admin-only "uploaded by" filter — ignored server-side (scoped down to
+    // nothing) if the caller isn't an admin. Mirrors listCards's user_id.
+    userId?: string;
+  } = {}
 ): Promise<DashboardAnalyticsOut> {
   const query = new URLSearchParams();
   for (const id of params.exhibitionIds ?? []) query.append("exhibition_ids", id);
   if (params.startDate) query.set("start_date", params.startDate);
   if (params.endDate) query.set("end_date", params.endDate);
+  if (params.userId) query.set("user_id", params.userId);
   const qs = query.toString();
   return request(`/analytics/dashboard${qs ? `?${qs}` : ""}`);
 }
