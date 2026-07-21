@@ -244,6 +244,12 @@ class CardBulkDeleteResponse(BaseModel):
     skipped_count: int
 
 
+class CardMergeRequest(BaseModel):
+    # The card that stays a real lead — this endpoint's own card_id path
+    # param is the one that gets folded into it and marked merged.
+    target_card_id: uuid.UUID
+
+
 class CardFieldCorrectionRequest(BaseModel):
     field_name: Literal[
         "full_name",

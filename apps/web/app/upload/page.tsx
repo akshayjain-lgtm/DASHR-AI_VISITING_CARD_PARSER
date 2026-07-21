@@ -474,7 +474,7 @@ export default function UploadPage() {
   // requests keeps every individual request small regardless of how many
   // files the user selected, without changing the server's per-request
   // batch-size cap or the "up to 500 files" ask from the UI's perspective.
-  const UPLOAD_CHUNK_SIZE = 15;
+  const UPLOAD_CHUNK_SIZE = 5;
 
   // One "Choose Files"/drag-drop selection can mix plain card photos with
   // zip/pdf containers — each type needs a different upload call (images go
@@ -499,10 +499,17 @@ export default function UploadPage() {
     let imageError: string | null = null;
     if (imageFiles.length > 0) {
       remainingImages = imageFiles;
+      // One id shared by every chunk of this submission — chunking exists
+      // only to keep each request small enough for a tunneled dev URL (see
+      // UPLOAD_CHUNK_SIZE above); front/back-of-card detection depends on
+      // adjacent photos landing in the same upload batch, so every chunk of
+      // one "Upload" click must carry the same batch id rather than each
+      // minting its own.
+      const uploadBatchId = crypto.randomUUID();
       try {
         for (let i = 0; i < imageFiles.length; i += UPLOAD_CHUNK_SIZE) {
           const chunk = imageFiles.slice(i, i + UPLOAD_CHUNK_SIZE);
-          const response = await uploadCards(exhibitionId, chunk);
+          const response = await uploadCards(exhibitionId, chunk, uploadBatchId);
           uploaded += response.batch_size;
           remainingImages = imageFiles.slice(i + UPLOAD_CHUNK_SIZE);
           setUploadProgress({ done: uploaded, total: imageFiles.length });
@@ -1410,6 +1417,10 @@ export default function UploadPage() {
       {selectedCardId && (
         <CardDetailDrawer
           cardId={selectedCardId}
+          // Merge-target candidates for the drawer's "Merge into..."
+          // fallback — reuses the already-fetched, already filter-scoped
+          // list on this page rather than a dedicated search endpoint.
+          candidateCards={cards}
           onClose={() => setSelectedCardId(null)}
           onChanged={() => {
             refreshCards();

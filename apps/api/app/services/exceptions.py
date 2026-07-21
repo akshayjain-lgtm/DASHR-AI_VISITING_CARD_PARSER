@@ -138,6 +138,18 @@ class CardHasMergedChildrenError(Exception):
         super().__init__(f"Card has {child_count} merged {child_word}; cascade not confirmed")
 
 
+class CannotMergeCardIntoSelfError(Exception):
+    """Raised by POST /cards/{card_id}/merge when target_card_id equals card_id."""
+
+
+class CardAlreadyMergedError(Exception):
+    """Raised by POST /cards/{card_id}/merge when either the source or the
+    target card already has merged_into_card_id set — only a root (unmerged)
+    card may be a merge source or target, so a merge chain/cycle can never
+    form. The caller should merge into (or re-target from) the root card
+    instead."""
+
+
 class CardStateChangedError(Exception):
     """Raised by DELETE /cards/{card_id} and POST /cards/bulk-delete when a
     concurrent request merged a new child onto a card between the children

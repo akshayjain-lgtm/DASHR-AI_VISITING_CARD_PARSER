@@ -19,12 +19,16 @@ _READ_CHUNK_SIZE = 65536
 # map simply fails verification (safe default), it never raises a KeyError.
 # HEIC and HEIF both decode to Pillow's "HEIF" format name (pillow-heif
 # doesn't distinguish the two containers), so both content-types map to it.
+# "MPO" is included for image/jpeg because many phone cameras (iPhone
+# Portrait/depth-capture shots in particular) save genuinely-valid JPEGs in
+# the MPO multi-picture container, which Pillow reports as format "MPO"
+# rather than "JPEG" — rejecting those would flag real photos as invalid.
 EXPECTED_IMAGE_FORMATS = {
-    "image/jpeg": "JPEG",
-    "image/png": "PNG",
-    "image/webp": "WEBP",
-    "image/heic": "HEIF",
-    "image/heif": "HEIF",
+    "image/jpeg": {"JPEG", "MPO"},
+    "image/png": {"PNG"},
+    "image/webp": {"WEBP"},
+    "image/heic": {"HEIF"},
+    "image/heif": {"HEIF"},
 }
 
 
@@ -56,7 +60,7 @@ def verify_image_content(data: bytes, content_type: str, filename: str | None) -
     except Exception:
         raise UnsupportedFileTypeError(f"{filename or 'file'} is not a valid image")
 
-    if actual_format != EXPECTED_IMAGE_FORMATS.get(content_type):
+    if actual_format not in EXPECTED_IMAGE_FORMATS.get(content_type, set()):
         raise UnsupportedFileTypeError(
             f"{filename or 'file'} content does not match its declared type {content_type}"
         )
