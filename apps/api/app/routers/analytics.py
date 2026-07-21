@@ -22,10 +22,14 @@ def get_dashboard_analytics(
     exhibition_ids: list[uuid.UUID] | None = Query(default=None),
     start_date: date | None = None,
     end_date: date | None = None,
+    # Admin-only "uploaded by" filter — narrows within whatever
+    # scope_to_visible_users already allows, so a non-admin passing
+    # someone else's id just gets an empty result, never a leak.
+    user_id: uuid.UUID | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     result = analytics_service.get_dashboard_analytics(
-        db, user, exhibition_ids, start_date, end_date
+        db, user, exhibition_ids, start_date, end_date, user_id
     )
     return DashboardAnalyticsOut.model_validate(result)

@@ -36,7 +36,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Dashboard from "@/app/dashboard/page";
-import type { DashboardAnalyticsOut, ExhibitionOut, UserOut } from "@/lib/api";
+import type { DashboardAnalyticsOut, ExhibitionOut, OrgMemberOut, UserOut } from "@/lib/api";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn() }),
@@ -55,6 +55,39 @@ const sampleUser: UserOut = {
   admin_name: null,
   admin_email: null,
 };
+
+// Admin-only "uploaded by" filter fixtures (22-upload-dashboard-filters).
+const adminUser: UserOut = {
+  ...sampleUser,
+  user_id: "admin-1",
+  name: "Admin Alex",
+  email: "admin@example.com",
+  org_id: "org-1",
+  role: "admin",
+};
+
+const sampleOrgMembers: OrgMemberOut[] = [
+  {
+    user_id: "admin-1",
+    name: "Admin Alex",
+    email: "admin@example.com",
+    role: "admin",
+    phone_no: null,
+    phone_verified: true,
+    is_active: true,
+    created_at: "2026-01-01T00:00:00Z",
+  },
+  {
+    user_id: "member-1",
+    name: "Member Mira",
+    email: "mira@example.com",
+    role: "member",
+    phone_no: null,
+    phone_verified: true,
+    is_active: true,
+    created_at: "2026-01-02T00:00:00Z",
+  },
+];
 
 const sampleExhibitions: ExhibitionOut[] = [
   {
@@ -129,7 +162,9 @@ function jsonResponse(status: number, body: unknown): Response {
 // script different responses across successive analytics fetches (e.g. to
 // prove a filter change swaps in a genuinely different slice).
 function createApiMock(opts: {
+  user?: UserOut;
   exhibitions?: ExhibitionOut[];
+  orgMembers?: OrgMemberOut[];
   analyticsResponder: (url: string, callIndex: number) => DashboardAnalyticsOut;
 }) {
   const analyticsCalls: string[] = [];
@@ -139,10 +174,13 @@ function createApiMock(opts: {
     const method = (init?.method ?? "GET").toUpperCase();
 
     if (method === "GET" && url === "/api/auth/me") {
-      return jsonResponse(200, sampleUser);
+      return jsonResponse(200, opts.user ?? sampleUser);
     }
     if (method === "GET" && url === "/api/exhibitions") {
       return jsonResponse(200, opts.exhibitions ?? []);
+    }
+    if (method === "GET" && url === "/api/orgs/members") {
+      return jsonResponse(200, opts.orgMembers ?? []);
     }
     if (method === "GET" && /^\/api\/analytics\/dashboard(\?.*)?$/.test(url)) {
       const callIndex = analyticsCalls.length;
@@ -487,5 +525,78 @@ describe("Filter composition consistency", () => {
     // slice's total, proving no chart is left stale.
     await screen.findByText("1");
     expect(screen.queryByText("7")).not.toBeInTheDocument();
+  });
+});
+
+// ==========================================================================
+// 6. "Uploaded by" filter -- admin-only, mirrors the pattern already on
+//    /upload (22-upload-dashboard-filters).
+// ==========================================================================
+
+describe("Uploaded by filter (admin-only)", () => {
+  it("never renders the Uploaded by control for a non-admin user", async () => {
+    const { fetchMock } = createApiMock({
+      user: sampleUser, // role: null
+      analyticsResponder: () => fullAccountAnalytics,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Dashboard />);
+    await screen.findByText("Total Leads");
+
+    expect(screen.queryByText("Uploaded by")).not.toBeInTheDocument();
+    // A non-admin's own analytics fetch never carries a user_id param.
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/orgs/members"))).toBe(
+      false
+    );
+  });
+
+  it("never renders the Uploaded by control for an admin whose org has only themself", async () => {
+    const { fetchMock } = createApiMock({
+      user: adminUser,
+      orgMembers: [sampleOrgMembers[0]], // admin only, no other member
+      analyticsResponder: () => fullAccountAnalytics,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Dashboard />);
+    await screen.findByText("Total Leads");
+
+    expect(screen.queryByText("Uploaded by")).not.toBeInTheDocument();
+  });
+
+  it("renders the Uploaded by control for an admin with other org members, defaulting to All users", async () => {
+    const { fetchMock, analyticsCalls } = createApiMock({
+      user: adminUser,
+      orgMembers: sampleOrgMembers,
+      analyticsResponder: () => fullAccountAnalytics,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Dashboard />);
+    await screen.findByText("Total Leads");
+
+    expect(await screen.findByText("Uploaded by")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("All users")).toBeInTheDocument();
+    expect(analyticsCalls[analyticsCalls.length - 1]).not.toContain("user_id=");
+  });
+
+  it("selecting a member narrows the analytics fetch by user_id and swaps in that slice", async () => {
+    const user = userEvent.setup();
+    const { fetchMock, analyticsCalls } = createApiMock({
+      user: adminUser,
+      orgMembers: sampleOrgMembers,
+      analyticsResponder: (_url, callIndex) => (callIndex === 0 ? fullAccountAnalytics : filteredAnalytics),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Dashboard />);
+    await screen.findByText("Total Leads");
+    expect(screen.getByText("7")).toBeInTheDocument();
+
+    await user.selectOptions(await screen.findByDisplayValue("All users"), "member-1");
+
+    await screen.findByText("1");
+    expect(analyticsCalls[analyticsCalls.length - 1]).toContain("user_id=member-1");
   });
 });

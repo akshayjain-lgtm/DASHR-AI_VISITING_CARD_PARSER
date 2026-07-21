@@ -20,6 +20,12 @@ import { OBtn, GBtn, DBtn } from "@/components/buttons";
 import { CardDetailDrawer } from "@/components/card-detail-drawer";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import {
+  RANGE_OPTIONS,
+  UploadedByFilter,
+  rangeToDates,
+  type TimeRangePreset,
+} from "@/components/dashboard-filter-bar";
+import {
   ApiError,
   createExhibition,
   enrichCompanies,
@@ -133,6 +139,14 @@ export default function UploadPage() {
   // surface it once there's at least one other user in the org to filter by.
   const showUserFilter = isAdmin && orgMembers.length > 1;
 
+  // Date-range filter — same preset UI as /dashboard, but defaults to "all"
+  // (not "30d"): unlike /dashboard, /upload today shows every un-actioned
+  // card with no date scoping, and defaulting to a 30-day window would
+  // silently hide older cards a seller still needs to parse/enrich/score.
+  const [dateFilter, setDateFilter] = useState<TimeRangePreset>("all");
+  const [customStart, setCustomStart] = useState<string>("");
+  const [customEnd, setCustomEnd] = useState<string>("");
+
   const orgMemberMap = new Map(orgMembers.map((m) => [m.user_id, m]));
   function uploaderLabel(userId: string): string {
     if (currentUser && userId === currentUser.user_id) return "You";
@@ -161,7 +175,7 @@ export default function UploadPage() {
   const [page, setPage] = useState(1);
   useEffect(() => {
     setPage(1);
-  }, [selectedExhibitionId, userFilter]);
+  }, [selectedExhibitionId, userFilter, dateFilter, customStart, customEnd]);
 
   // Real, upload-able/parse-able exhibition selected — excludes the two
   // view-only sentinels ("" General capture and "all" every exhibition),
@@ -179,6 +193,7 @@ export default function UploadPage() {
   const MAX_CARDS_PER_VIEW = 500;
 
   function refreshCards() {
+    const { startDate, endDate } = rangeToDates({ range: dateFilter, customStart, customEnd });
     return listCards({
       include_folded: true,
       limit: MAX_CARDS_PER_VIEW,
@@ -188,13 +203,15 @@ export default function UploadPage() {
         ? { exhibition_id: selectedExhibitionId }
         : { unassigned: true }),
       ...(showUserFilter && userFilter !== "all" ? { user_id: userFilter } : {}),
+      ...(startDate ? { start_date: startDate } : {}),
+      ...(endDate ? { end_date: endDate } : {}),
     }).then(setCards);
   }
 
   useEffect(() => {
     refreshCards();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedExhibitionId, uploadedCount, userFilter]);
+  }, [selectedExhibitionId, uploadedCount, userFilter, dateFilter, customStart, customEnd]);
 
   // Narrowed by the admin "uploaded by" filter — this, not the raw fetched
   // `cards`, is what the table displays/paginates and what "select all"
@@ -959,26 +976,53 @@ export default function UploadPage() {
                 </p>
               )}
             </div>
-            {showUserFilter && (
+            <div className="flex flex-wrap items-center gap-3">
+              {/* Date-range filter — same preset UI as /dashboard, defaults
+                  to "All time" here (see dateFilter state comment above). */}
               <div className="flex items-center gap-2">
                 <label className="text-xs font-black uppercase tracking-wider text-black/35">
-                  Uploaded by
+                  Date range
                 </label>
                 <select
-                  value={userFilter}
-                  onChange={(e) => setUserFilter(e.target.value)}
+                  value={dateFilter}
+                  onChange={(e) => setDateFilter(e.target.value as TimeRangePreset)}
                   className="border border-black/12 px-3 py-1.5 text-sm focus:outline-none focus:border-[#E65527] bg-white"
                 >
-                  <option value="all">All users</option>
-                  {orgMembers.map((m) => (
-                    <option key={m.user_id} value={m.user_id}>
-                      {m.name?.trim() || m.email}
-                      {currentUser && m.user_id === currentUser.user_id ? " (You)" : ""}
+                  {RANGE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
                     </option>
                   ))}
                 </select>
               </div>
-            )}
+              {dateFilter === "custom" && (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <input
+                    type="date"
+                    value={customStart}
+                    onChange={(e) => setCustomStart(e.target.value)}
+                    aria-label="Custom range start date"
+                    className="border border-black/12 px-3 py-1.5 text-sm focus:outline-none focus:border-[#E65527] bg-white"
+                  />
+                  <span className="text-black/30 text-sm">to</span>
+                  <input
+                    type="date"
+                    value={customEnd}
+                    onChange={(e) => setCustomEnd(e.target.value)}
+                    aria-label="Custom range end date"
+                    className="border border-black/12 px-3 py-1.5 text-sm focus:outline-none focus:border-[#E65527] bg-white"
+                  />
+                </div>
+              )}
+              {showUserFilter && (
+                <UploadedByFilter
+                  orgMembers={orgMembers}
+                  currentUserId={currentUser?.user_id}
+                  value={userFilter}
+                  onChange={setUserFilter}
+                />
+              )}
+            </div>
           </div>
 
           {/* Bulk action toolbar: selection count on the left, the

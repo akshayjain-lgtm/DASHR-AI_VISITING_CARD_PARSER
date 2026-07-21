@@ -29,20 +29,28 @@ _UNCLASSIFIED_LABEL = "Unclassified"
 
 @dataclass(frozen=True)
 class AnalyticsFilters:
-    """The exhibition/date-range slice every aggregation below is filtered
-    to — bundled into one object instead of three loose positional params
+    """The exhibition/date-range/uploader slice every aggregation below is
+    filtered to — bundled into one object instead of loose positional params
     repeated across all six aggregators, so adding a filter or reordering
     one doesn't require touching every function signature."""
 
     exhibition_ids: list[uuid.UUID] | None = None
     start_date: date | None = None
     end_date: date | None = None
+    # Admin-only "uploaded by" filter — narrows within whatever
+    # scope_to_visible_users already allows, mirroring card_service.list_cards's
+    # existing user_id param. Safe to accept from any caller: a non-admin's
+    # query is already self-scoped, so this can only narrow to "self or
+    # nothing", never widen visibility.
+    user_id: uuid.UUID | None = None
 
 
 def _apply_shared_filters(stmt: Select, current_user: User, filters: AnalyticsFilters) -> Select:
     """The one place AnalyticsFilters is applied, so all six aggregations
     below stay identically filtered."""
     stmt = scope_to_visible_users(stmt, current_user, VisitingCard.user_id)
+    if filters.user_id is not None:
+        stmt = stmt.where(VisitingCard.user_id == filters.user_id)
     if filters.exhibition_ids:
         stmt = stmt.where(VisitingCard.exhibition_id.in_(filters.exhibition_ids))
     if filters.start_date is not None:
@@ -165,8 +173,11 @@ def get_dashboard_analytics(
     exhibition_ids: list[uuid.UUID] | None,
     start_date: date | None,
     end_date: date | None,
+    user_id: uuid.UUID | None = None,
 ) -> dict:
-    filters = AnalyticsFilters(exhibition_ids=exhibition_ids, start_date=start_date, end_date=end_date)
+    filters = AnalyticsFilters(
+        exhibition_ids=exhibition_ids, start_date=start_date, end_date=end_date, user_id=user_id
+    )
     return {
         "lead_volume": _lead_volume(db, current_user, filters),
         "industry_mix": _industry_mix(db, current_user, filters),

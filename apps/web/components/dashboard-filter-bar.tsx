@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
-import type { ExhibitionOut } from "@/lib/api";
+import type { ExhibitionOut, OrgMemberOut } from "@/lib/api";
 
 export type TimeRangePreset = "30d" | "90d" | "1y" | "all" | "custom";
 
@@ -11,15 +11,53 @@ export type DashboardFilters = {
   range: TimeRangePreset;
   customStart?: string;
   customEnd?: string;
+  // Admin-only "uploaded by" filter — absent/"all" means every visible
+  // uploader. Mirrors the upload page's existing userFilter convention.
+  userId?: string;
 };
 
-const RANGE_OPTIONS: { value: TimeRangePreset; label: string }[] = [
+// Exported so /upload can render the identical preset list rather than
+// re-declaring it.
+export const RANGE_OPTIONS: { value: TimeRangePreset; label: string }[] = [
   { value: "30d", label: "Last 30 days" },
   { value: "90d", label: "Last 90 days" },
   { value: "1y", label: "Last 1 year" },
   { value: "all", label: "All time" },
   { value: "custom", label: "Custom range" },
 ];
+
+// Admin-only "uploaded by" select — shared by /dashboard and /upload so both
+// pages render an identical control instead of each reimplementing it.
+export function UploadedByFilter({
+  orgMembers,
+  currentUserId,
+  value,
+  onChange,
+}: {
+  orgMembers: OrgMemberOut[];
+  currentUserId?: string;
+  value: string;
+  onChange: (userId: string) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <label className="text-xs font-black uppercase tracking-wider text-black/35">Uploaded by</label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="border border-black/12 px-3 py-2 text-sm bg-white focus:outline-none focus:border-[#E65527] transition-colors"
+      >
+        <option value="all">All users</option>
+        {orgMembers.map((m) => (
+          <option key={m.user_id} value={m.user_id}>
+            {m.name?.trim() || m.email}
+            {currentUserId && m.user_id === currentUserId ? " (You)" : ""}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
 
 // Checkbox dropdown, not a native <select multiple> — a fixed-height
 // listbox is a poor fit on small touch screens (dataviz skill's
@@ -103,10 +141,18 @@ export function DashboardFilterBar({
   exhibitions,
   filters,
   onFiltersChange,
+  showUserFilter = false,
+  orgMembers = [],
+  currentUserId,
 }: {
   exhibitions: ExhibitionOut[];
   filters: DashboardFilters;
   onFiltersChange: (filters: DashboardFilters) => void;
+  // Admin-only "uploaded by" control — only rendered when true (gated by
+  // the caller on isAdmin && orgMembers.length > 1, same as /upload).
+  showUserFilter?: boolean;
+  orgMembers?: OrgMemberOut[];
+  currentUserId?: string;
 }) {
   return (
     <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3">
@@ -115,6 +161,15 @@ export function DashboardFilterBar({
         selectedIds={filters.exhibitionIds}
         onChange={(exhibitionIds) => onFiltersChange({ ...filters, exhibitionIds })}
       />
+
+      {showUserFilter && (
+        <UploadedByFilter
+          orgMembers={orgMembers}
+          currentUserId={currentUserId}
+          value={filters.userId ?? "all"}
+          onChange={(userId) => onFiltersChange({ ...filters, userId })}
+        />
+      )}
 
       <select
         value={filters.range}
@@ -152,9 +207,14 @@ export function DashboardFilterBar({
 }
 
 // Translates the current filters into {startDate, endDate} (YYYY-MM-DD) for
-// getDashboardAnalytics — kept alongside the filter bar since it's the only
-// place range presets/custom dates are defined, not duplicated in the page.
-export function rangeToDates(filters: DashboardFilters): { startDate?: string; endDate?: string } {
+// getDashboardAnalytics/listCards — kept alongside the filter bar since it's
+// the only place range presets/custom dates are defined, not duplicated in
+// the page. Only reads the range/custom-date fields, so callers that don't
+// have a full DashboardFilters (e.g. /upload, which has no exhibition
+// filter) can pass just those.
+export function rangeToDates(
+  filters: Pick<DashboardFilters, "range" | "customStart" | "customEnd">
+): { startDate?: string; endDate?: string } {
   if (filters.range === "custom") {
     return { startDate: filters.customStart || undefined, endDate: filters.customEnd || undefined };
   }

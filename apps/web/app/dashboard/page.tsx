@@ -15,8 +15,10 @@ import { RegionMixChart } from "@/components/charts/region-mix-chart";
 import { getCurrentUser } from "@/lib/auth";
 import {
   listExhibitions,
+  listOrgMembers,
   getDashboardAnalytics,
   type ExhibitionOut,
+  type OrgMemberOut,
   type UserOut,
   type DashboardAnalyticsOut,
 } from "@/lib/api";
@@ -28,14 +30,35 @@ export default function Dashboard() {
   const [filters, setFilters] = useState<DashboardFilters>({ exhibitionIds: [], range: "30d" });
   const [analytics, setAnalytics] = useState<DashboardAnalyticsOut | null>(null);
 
+  // "Uploaded by" filter — admin-only, mirrors the same pattern already on
+  // /upload. orgMembers only loads once we know the current user is an
+  // admin (the members endpoint 403s otherwise).
+  const [orgMembers, setOrgMembers] = useState<OrgMemberOut[]>([]);
+  const isAdmin = user?.role === "admin";
+  const showUserFilter = isAdmin && orgMembers.length > 1;
+
   useEffect(() => {
     getCurrentUser().then(setUser);
     listExhibitions().then(setExhibitions);
   }, []);
 
   useEffect(() => {
+    if (!isAdmin) return;
+    listOrgMembers()
+      .then(setOrgMembers)
+      .catch(() => {});
+  }, [isAdmin]);
+
+  useEffect(() => {
     const { startDate, endDate } = rangeToDates(filters);
-    getDashboardAnalytics({ exhibitionIds: filters.exhibitionIds, startDate, endDate }).then(setAnalytics);
+    // filters.userId can only ever be set via UploadedByFilter, which only
+    // renders once showUserFilter is true — no separate gate needed here,
+    // and keeping showUserFilter out of this effect's deps avoids an
+    // unnecessary duplicate fetch the moment orgMembers finishes loading.
+    const userId = filters.userId && filters.userId !== "all" ? filters.userId : undefined;
+    getDashboardAnalytics({ exhibitionIds: filters.exhibitionIds, startDate, endDate, userId }).then(
+      setAnalytics
+    );
   }, [filters]);
 
   const totalLeads = analytics
@@ -75,7 +98,14 @@ export default function Dashboard() {
           {/* Filters — one row (stacks on narrow screens), above the
               charts; every chart re-scopes to the same slice so all
               numbers always agree. */}
-          <DashboardFilterBar exhibitions={exhibitions} filters={filters} onFiltersChange={setFilters} />
+          <DashboardFilterBar
+            exhibitions={exhibitions}
+            filters={filters}
+            onFiltersChange={setFilters}
+            showUserFilter={showUserFilter}
+            orgMembers={orgMembers}
+            currentUserId={user?.user_id}
+          />
 
           {/* Analytics */}
           {analytics ? (

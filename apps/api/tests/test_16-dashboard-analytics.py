@@ -51,12 +51,12 @@ Judgment calls made in the absence of explicit spec text:
      construct valid input addresses -- the *behavior* under test (address
      text maps to an Indian state bucket, unmatched/blank folds to
      "Unclassified") comes straight from the spec.
-  3. **Admin-sees-org-aggregation is out of scope**, documented below as a
-     `pytest.mark.skip` placeholder: no conftest helper currently puts a
-     user through a real org + admin/member setup (account creation via
-     `create_verified_user` only ever produces `org_id=NULL`, `role=NULL`
-     accounts), so fabricating one here would encode assumptions about a
-     future org-invite feature rather than test documented behavior.
+  3. **Admin-sees-org-aggregation and the `user_id` "uploaded by" filter**
+     (added by `22-upload-dashboard-filters`) are covered via
+     `_create_org_admin`/`_add_org_member`, reusing
+     `17-admin-user-management`'s invite/accept flow to put a user through a
+     real org + admin/member setup — this was previously a documented
+     `pytest.mark.skip` placeholder for lack of that helper.
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ from app.main import app as fastapi_app
 from app.models.company import Company
 from app.models.exhibition import Exhibition
 from app.models.visiting_card import VisitingCard
-from conftest import create_verified_user
+from conftest import create_verified_user, unique_email
 
 
 def _login(client: TestClient, user: dict) -> None:
@@ -83,6 +83,37 @@ def _authenticated_user(client: TestClient, fake_otp_provider, **overrides) -> d
     user = create_verified_user(client, fake_otp_provider, **overrides)
     _login(client, user)
     return user
+
+
+def _create_org_admin(client: TestClient, fake_otp_provider, company_name="Analytics Filter Org", **overrides) -> dict:
+    """Mirrors test_17-admin-user-management.py's helper of the same name —
+    signing up with a non-blank company_name creates an Organization and
+    makes the signer its admin."""
+    user = create_verified_user(client, fake_otp_provider, company_name=company_name, **overrides)
+    _login(client, user)
+    return user
+
+
+def _add_org_member(
+    admin_client: TestClient,
+    member_client: TestClient,
+    fake_otp_provider,
+    fake_invite_email_provider,
+) -> dict:
+    """Invites a fresh email to the admin's org and accepts on member_client
+    — the real org+admin/member setup this file's module docstring
+    previously documented as unavailable; 17-admin-user-management's
+    invite/accept flow makes it possible now."""
+    email = unique_email()
+    invite = admin_client.post("/orgs/invites", json={"email": email})
+    assert invite.status_code == 201, invite.text
+    token = fake_invite_email_provider.latest_token_for(email)
+
+    member = create_verified_user(member_client, fake_otp_provider, email=email)
+    _login(member_client, member)
+    accept = member_client.post(f"/orgs/invites/{token}/accept")
+    assert accept.status_code == 200, accept.text
+    return member
 
 
 def _unique_company_name(label: str) -> str:
@@ -533,24 +564,73 @@ def test_malformed_end_date_returns_422(client, fake_otp_provider):
 
 
 # --------------------------------------------------------------------------
-# Out of scope for this file (documented, not silently skipped) -- mirrors
-# the established pattern elsewhere in this test suite (e.g.
-# test_04_visiting_card_bulk_upload.py's
-# test_admin_sees_every_org_members_exhibitions_and_cards) for the same gap:
-# admin-sees-org-members visibility needs an org/admin signup path no
-# conftest helper currently supports.
+# 14. Admin org-visibility + the new "uploaded by" user_id filter
+#     (22-upload-dashboard-filters). 17-admin-user-management's invite/accept
+#     flow (reused via _create_org_admin/_add_org_member above) makes the
+#     admin+member setup possible -- this class was previously a documented
+#     skip in this file for lack of that helper.
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.skip(
-    reason=(
-        "Admin-sees-aggregated-org-analytics for GET /analytics/dashboard requires "
-        "putting a user through a real org + admin/member setup that no conftest "
-        "helper currently supports (account creation via create_verified_user only "
-        "ever produces org_id=NULL, role=NULL accounts). Fabricating one via direct "
-        "ORM manipulation here would encode assumptions about a future org-invite "
-        "feature's implementation rather than test documented behavior."
-    )
-)
-def test_admin_sees_aggregated_analytics_across_org_members():
-    pass
+def test_admin_sees_aggregated_analytics_across_org_members(
+    client, fake_otp_provider, fake_invite_email_provider, db_session
+):
+    admin = _create_org_admin(client, fake_otp_provider, company_name="Analytics Org")
+    admin_id = uuid.UUID(admin["user_id"])
+    _make_card(db_session, user_id=admin_id, lead_score=90, designation_level="c_level")
+
+    with TestClient(fastapi_app) as member_client:
+        member = _add_org_member(client, member_client, fake_otp_provider, fake_invite_email_provider)
+        member_id = uuid.UUID(member["user_id"])
+        _make_card(db_session, user_id=member_id, lead_score=10, designation_level="manager")
+
+    # No filter: the admin's aggregation reflects every org member's cards.
+    data = _get_analytics(client)
+    assert sum(p["count"] for p in data["lead_volume"]) == 2
+    assert data["score_distribution"] == {"high": 1, "medium": 0, "low": 1, "unscored": 0}
+
+
+def test_user_id_filter_narrows_admin_analytics_to_one_member(
+    client, fake_otp_provider, fake_invite_email_provider, db_session
+):
+    admin = _create_org_admin(client, fake_otp_provider, company_name="Analytics Org 2")
+    admin_id = uuid.UUID(admin["user_id"])
+    _make_card(db_session, user_id=admin_id, lead_score=90, designation_level="c_level")
+
+    with TestClient(fastapi_app) as member_client:
+        member = _add_org_member(client, member_client, fake_otp_provider, fake_invite_email_provider)
+        member_id = uuid.UUID(member["user_id"])
+        _make_card(db_session, user_id=member_id, lead_score=10, designation_level="manager")
+
+    # user_id filter narrows every section down to just the member's card --
+    # the admin-only "Uploaded by" filter now shared by /dashboard and /upload.
+    data = _get_analytics(client, user_id=str(member_id))
+    assert sum(p["count"] for p in data["lead_volume"]) == 1
+    assert data["score_distribution"] == {"high": 0, "medium": 0, "low": 1, "unscored": 0}
+    assert data["role_mix"] == [{"role": "manager", "count": 1}]
+
+
+def test_user_id_filter_never_leaks_another_users_cards_for_org_less_caller(
+    client, fake_otp_provider, db_session
+):
+    user = _authenticated_user(client, fake_otp_provider)
+    user_id = uuid.UUID(user["user_id"])
+    _make_card(db_session, user_id=user_id, lead_score=90)
+
+    with TestClient(fastapi_app) as other_client:
+        other_user = _authenticated_user(other_client, fake_otp_provider)
+        other_user_id = uuid.UUID(other_user["user_id"])
+        _make_card(db_session, user_id=other_user_id, lead_score=10)
+
+    # An org-less caller's query is already self-scoped by
+    # scope_to_visible_users -- passing another user's id must narrow to
+    # nothing, never widen visibility into someone else's analytics.
+    data = _get_analytics(client, user_id=str(other_user_id))
+    assert data["lead_volume"] == []
+    assert data["score_distribution"] == EMPTY_SCORE_DISTRIBUTION
+
+
+def test_malformed_user_id_returns_422(client, fake_otp_provider):
+    _authenticated_user(client, fake_otp_provider)
+    resp = client.get("/analytics/dashboard", params={"user_id": "not-a-valid-uuid"})
+    assert resp.status_code == 422, resp.text
