@@ -111,7 +111,7 @@ export default function WalletPage() {
     <div className="min-h-screen bg-white flex flex-col sm:flex-row">
       <RazorpayCheckoutScript />
       <Sidebar active="wallet" />
-      <main className="flex-1 p-10 max-w-3xl">
+      <main className="flex-1 min-w-0 w-full p-4 sm:p-6 lg:p-10 max-w-3xl">
         <div className="mb-8">
           <h1 className="text-2xl font-black mb-1">Wallet</h1>
           <p className="text-sm text-black/45">
@@ -119,7 +119,7 @@ export default function WalletPage() {
           </p>
         </div>
 
-        <div className="border border-black/10 px-6 py-6 mb-8 flex items-center justify-between">
+        <div className="border border-black/10 px-4 sm:px-6 py-6 mb-8 flex flex-wrap items-start gap-6 justify-between">
           <div className="flex items-center gap-4">
             <div className="w-11 h-11 bg-[#E65527]/10 flex items-center justify-center shrink-0">
               <WalletIcon size={18} className="text-[#E65527]" />
@@ -142,7 +142,7 @@ export default function WalletPage() {
             </div>
           </div>
 
-          <div className="flex items-end gap-3">
+          <div className="flex flex-wrap items-end gap-3">
             <div>
               <label className="text-[11px] font-black uppercase tracking-wider text-black/50 block mb-1.5">
                 Amount (INR)
@@ -175,21 +175,22 @@ export default function WalletPage() {
           Transaction History
         </h2>
         <div className="border border-black/10 overflow-hidden">
-          <div className="grid grid-cols-[1fr_1fr_1fr_1fr] gap-4 bg-[#fafafa] border-b border-black/8 px-5 py-3 text-[11px] font-black uppercase tracking-wider text-black/35 items-center">
+          <div className="overflow-x-auto">
+          <div className="min-w-[560px] grid grid-cols-[1fr_1fr_1fr_1fr] gap-4 bg-[#fafafa] border-b border-black/8 px-5 py-3 text-[11px] font-black uppercase tracking-wider text-black/35 items-center">
             <div>Type</div>
             <div>Amount</div>
             <div>Balance After</div>
             <div>Date</div>
           </div>
           {transactions.length === 0 ? (
-            <div className="px-5 py-10 text-center text-sm text-black/30">
+            <div className="min-w-[560px] px-5 py-10 text-center text-sm text-black/30">
               {loading ? "Loading…" : "No transactions yet."}
             </div>
           ) : (
             transactions.map((txn) => (
               <div
                 key={txn.wallet_transaction_id}
-                className="grid grid-cols-[1fr_1fr_1fr_1fr] gap-4 px-5 py-4 border-b border-black/5 text-sm items-center"
+                className="min-w-[560px] grid grid-cols-[1fr_1fr_1fr_1fr] gap-4 px-5 py-4 border-b border-black/5 text-sm items-center"
               >
                 <div>
                   <TransactionTypeBadge type={txn.transaction_type} />
@@ -206,12 +207,13 @@ export default function WalletPage() {
                   {"₹"}
                   {parseFloat(txn.balance_after_inr).toLocaleString("en-IN")}
                 </div>
-                <div className="text-black/40 text-xs">
+                <div className="text-black/40 text-xs whitespace-nowrap">
                   {new Date(txn.created_at).toLocaleString("en-IN")}
                 </div>
               </div>
             ))
           )}
+          </div>
         </div>
       </main>
     </div>
