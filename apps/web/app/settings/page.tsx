@@ -389,7 +389,8 @@ function RolesAccessTab() {
           {error && <p className="text-sm text-red-600 mb-6">{error}</p>}
           {myInvites.length > 0 ? (
             <div className="border border-black/10 overflow-hidden mb-6">
-              <div className="grid grid-cols-[2fr_1fr_auto] gap-4 bg-[#fafafa] border-b border-black/8 px-5 py-3 text-[11px] font-black uppercase tracking-wider text-black/35 items-center">
+              <div className="overflow-x-auto">
+              <div className="min-w-[480px] grid grid-cols-[2fr_1fr_auto] gap-4 bg-[#fafafa] border-b border-black/8 px-5 py-3 text-[11px] font-black uppercase tracking-wider text-black/35 items-center">
                 <div>Organization</div>
                 <div>Expires</div>
                 <div />
@@ -397,7 +398,7 @@ function RolesAccessTab() {
               {myInvites.map((invite) => (
                 <div
                   key={invite.invite_id}
-                  className="grid grid-cols-[2fr_1fr_auto] gap-4 px-5 py-4 border-b border-black/5 text-sm items-center"
+                  className="min-w-[480px] grid grid-cols-[2fr_1fr_auto] gap-4 px-5 py-4 border-b border-black/5 text-sm items-center"
                 >
                   <div className="font-bold">{invite.org_name}</div>
                   <div className="text-black/40 text-xs">
@@ -414,6 +415,7 @@ function RolesAccessTab() {
                   </div>
                 </div>
               ))}
+              </div>
             </div>
           ) : (
             <div className="border border-black/10 px-6 py-10 text-center">
@@ -447,8 +449,8 @@ function RolesAccessTab() {
           <h2 className="text-[11px] font-black uppercase tracking-wider text-black/40 mb-3">
             Invite a Teammate
           </h2>
-          <form onSubmit={handleInvite} className="flex items-end gap-3 mb-10">
-            <div className="flex-1 max-w-xs">
+          <form onSubmit={handleInvite} className="flex flex-wrap items-end gap-3 mb-10">
+            <div className="flex-1 min-w-[200px] max-w-xs">
               <label className="text-[11px] font-black uppercase tracking-wider text-black/50 block mb-1.5">
                 Email
               </label>
@@ -474,7 +476,8 @@ function RolesAccessTab() {
                 Pending Invites
               </h2>
               <div className="border border-black/10 overflow-hidden mb-10">
-                <div className="grid grid-cols-[2fr_1fr_1fr_auto] gap-4 bg-[#fafafa] border-b border-black/8 px-5 py-3 text-[11px] font-black uppercase tracking-wider text-black/35 items-center">
+                <div className="overflow-x-auto">
+                <div className="min-w-[560px] grid grid-cols-[2fr_1fr_1fr_auto] gap-4 bg-[#fafafa] border-b border-black/8 px-5 py-3 text-[11px] font-black uppercase tracking-wider text-black/35 items-center">
                   <div>Email</div>
                   <div>Status</div>
                   <div>Expires</div>
@@ -483,11 +486,11 @@ function RolesAccessTab() {
                 {invites.map((invite) => (
                   <div
                     key={invite.invite_id}
-                    className="grid grid-cols-[2fr_1fr_1fr_auto] gap-4 px-5 py-4 border-b border-black/5 text-sm items-center"
+                    className="min-w-[560px] grid grid-cols-[2fr_1fr_1fr_auto] gap-4 px-5 py-4 border-b border-black/5 text-sm items-center"
                   >
-                    <div>{invite.email}</div>
+                    <div className="truncate min-w-0" title={invite.email}>{invite.email}</div>
                     <div className="capitalize text-black/60">{invite.status}</div>
-                    <div className="text-black/40 text-xs">
+                    <div className="text-black/40 text-xs whitespace-nowrap">
                       {new Date(invite.expires_at).toLocaleDateString("en-IN")}
                     </div>
                     <div>
@@ -503,6 +506,7 @@ function RolesAccessTab() {
                     </div>
                   </div>
                 ))}
+                </div>
               </div>
             </>
           )}
@@ -511,7 +515,8 @@ function RolesAccessTab() {
             Team Members
           </h2>
           <div className="border border-black/10 overflow-hidden">
-            <div className="grid grid-cols-[2fr_2fr_1fr_1fr_auto] gap-4 bg-[#fafafa] border-b border-black/8 px-5 py-3 text-[11px] font-black uppercase tracking-wider text-black/35 items-center">
+            <div className="overflow-x-auto">
+            <div className="min-w-[720px] grid grid-cols-[2fr_2fr_1fr_1fr_auto] gap-4 bg-[#fafafa] border-b border-black/8 px-5 py-3 text-[11px] font-black uppercase tracking-wider text-black/35 items-center">
               <div>Name</div>
               <div>Email</div>
               <div>Role</div>
@@ -524,17 +529,19 @@ function RolesAccessTab() {
               return (
                 <div
                   key={member.user_id}
-                  className="grid grid-cols-[2fr_2fr_1fr_1fr_auto] gap-4 px-5 py-4 border-b border-black/5 text-sm items-center"
+                  className="min-w-[720px] grid grid-cols-[2fr_2fr_1fr_1fr_auto] gap-4 px-5 py-4 border-b border-black/5 text-sm items-center"
                 >
-                  <div>{member.name ?? "—"}</div>
-                  <div className="text-black/60">{member.email}</div>
+                  <div className="truncate min-w-0">{member.name ?? "—"}</div>
+                  <div className="text-black/60 truncate min-w-0" title={member.email}>
+                    {member.email}
+                  </div>
                   <div>
                     <RoleBadge role={member.role} />
                   </div>
                   <div>
                     <StatusBadge active={member.is_active} />
                   </div>
-                  <div className="flex justify-end gap-2">
+                  <div className="flex justify-end gap-2 flex-wrap">
                     {!isSelf && member.role !== "admin" && (
                       <>
                         {member.is_active ? (
@@ -572,6 +579,7 @@ function RolesAccessTab() {
                 </div>
               );
             })}
+            </div>
           </div>
         </>
       )}
@@ -630,34 +638,35 @@ function OrdersTab() {
       {error && <p className="text-sm text-red-600 mb-4">{error}</p>}
 
       <div className="border border-black/10 overflow-hidden">
-        <div className="grid grid-cols-[1fr_1fr_1fr_auto] gap-4 bg-[#fafafa] border-b border-black/8 px-5 py-3 text-[11px] font-black uppercase tracking-wider text-black/35 items-center">
+        <div className="overflow-x-auto">
+        <div className="min-w-[560px] grid grid-cols-[1fr_1fr_1fr_auto] gap-4 bg-[#fafafa] border-b border-black/8 px-5 py-3 text-[11px] font-black uppercase tracking-wider text-black/35 items-center">
           <div>Date Issued</div>
           <div>Invoice #</div>
           <div>Amount</div>
           <div></div>
         </div>
         {invoices.length === 0 ? (
-          <div className="px-5 py-10 text-center text-sm text-black/30">
+          <div className="min-w-[560px] px-5 py-10 text-center text-sm text-black/30">
             {loading ? "Loading…" : "No invoices yet."}
           </div>
         ) : (
           invoices.map((invoice) => (
             <div
               key={invoice.invoice_id}
-              className="grid grid-cols-[1fr_1fr_1fr_auto] gap-4 px-5 py-4 border-b border-black/5 text-sm items-center"
+              className="min-w-[560px] grid grid-cols-[1fr_1fr_1fr_auto] gap-4 px-5 py-4 border-b border-black/5 text-sm items-center"
             >
-              <div className="text-black/60">
+              <div className="text-black/60 whitespace-nowrap">
                 {new Date(invoice.issued_at).toLocaleDateString("en-IN")}
               </div>
-              <div className="font-bold">{invoice.invoice_number}</div>
-              <div>
+              <div className="font-bold truncate min-w-0">{invoice.invoice_number}</div>
+              <div className="whitespace-nowrap">
                 {"₹"}
                 {parseFloat(invoice.total_inr).toLocaleString("en-IN")}
               </div>
               <button
                 onClick={() => handleDownload(invoice)}
                 disabled={downloadingId === invoice.invoice_id}
-                className="flex items-center gap-1.5 text-sm font-bold text-[#E65527] hover:text-[#cf4a1f] transition-colors disabled:opacity-50"
+                className="flex items-center gap-1.5 text-sm font-bold text-[#E65527] hover:text-[#cf4a1f] transition-colors disabled:opacity-50 whitespace-nowrap"
               >
                 <Download size={14} />
                 {downloadingId === invoice.invoice_id ? "Downloading…" : "Download PDF"}
@@ -665,6 +674,7 @@ function OrdersTab() {
             </div>
           ))
         )}
+        </div>
       </div>
     </div>
   );
@@ -686,7 +696,7 @@ export default function SettingsPage() {
   return (
     <div className="min-h-screen bg-white flex flex-col sm:flex-row">
       <Sidebar active="settings" />
-      <main className="flex-1 p-10 max-w-4xl">
+      <main className="flex-1 min-w-0 w-full p-4 sm:p-6 lg:p-10 max-w-4xl">
         <div className="mb-8">
           <h1 className="text-2xl font-black mb-1">Settings</h1>
           <p className="text-sm text-black/45">
@@ -694,13 +704,13 @@ export default function SettingsPage() {
           </p>
         </div>
 
-        <div className="flex items-center justify-between border-b border-black/10 mb-8">
-          <div className="flex items-center gap-1">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-black/10 mb-8">
+          <div className="flex flex-wrap items-center gap-1">
             {TABS.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
                 onClick={() => setTab(id)}
-                className={`flex items-center gap-2 px-4 py-3 text-sm font-bold border-b-2 -mb-px transition-colors ${
+                className={`flex items-center gap-2 px-3 sm:px-4 py-3 text-sm font-bold border-b-2 -mb-px transition-colors whitespace-nowrap ${
                   tab === id
                     ? "border-[#E65527] text-[#E65527]"
                     : "border-transparent text-black/45 hover:text-black"
@@ -713,7 +723,7 @@ export default function SettingsPage() {
           </div>
           <button
             onClick={handleSignOut}
-            className="flex items-center gap-2 px-4 py-3 text-sm font-bold text-black/45 hover:text-black transition-colors"
+            className="flex items-center gap-2 px-3 sm:px-4 py-3 text-sm font-bold text-black/45 hover:text-black transition-colors whitespace-nowrap"
           >
             <LogOut size={14} />
             Sign Out

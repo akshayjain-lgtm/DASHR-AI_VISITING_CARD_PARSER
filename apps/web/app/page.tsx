@@ -86,13 +86,13 @@ export default function HomePage() {
       <Navbar />
 
       {/* Hero */}
-      <section className="max-w-6xl mx-auto px-6 pt-20 pb-20">
+      <section className="max-w-6xl mx-auto px-4 sm:px-6 pt-12 sm:pt-20 pb-20">
         <div className="max-w-3xl">
           <div className="inline-flex items-center gap-2 border border-[#E65527]/25 bg-[#E65527]/5 px-3 py-1.5 text-[11px] font-black text-[#E65527] uppercase tracking-[0.12em] mb-8">
             <ScanLine size={11} />
             Built for industrial trade exhibitions
           </div>
-          <h1 className="text-[3.25rem] font-black leading-[1.05] tracking-tight text-black mb-6">
+          <h1 className="text-4xl sm:text-5xl lg:text-[3.25rem] font-black leading-[1.05] tracking-tight text-black mb-6">
             Turn a Stack of
             <br />
             <span className="text-[#E65527]">Business Cards</span> Into
@@ -104,7 +104,7 @@ export default function HomePage() {
             every detail, enrich with company intelligence, and score each
             lead by fit for your product lines.
           </p>
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center gap-4">
             <OBtn onClick={() => router.push("/product")} className="px-7 py-3 text-base">
               Try Demo <ArrowRight size={16} />
             </OBtn>

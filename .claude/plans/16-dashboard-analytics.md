@@ -63,3 +63,4 @@ Backend (steps 2–3) → manual sanity check → Frontend (steps 4–8) → man
 - `apps/web/lib/api.ts`, `apps/web/app/dashboard/page.tsx`, `apps/web/components/charts/*.tsx`
 - `apps/api/tests/test_analytics.py`, `apps/web/__tests__/16-dashboard-analytics.test.tsx`
 - `CLAUDE.md`, `.claude/plans/16-dashboard-analytics.md`
+
