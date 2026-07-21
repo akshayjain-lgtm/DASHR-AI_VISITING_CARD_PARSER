@@ -353,12 +353,28 @@ export function updateProfile(data: {
 
 export function uploadCards(
   exhibitionId: string | null,
-  files: File[]
+  files: File[],
+  // Shared across every chunk of one user-initiated submission (see
+  // UPLOAD_CHUNK_SIZE in upload/page.tsx) so front/back-of-card detection,
+  // which only correlates photos within the same upload batch, still works
+  // when a submission spans more than one chunked request.
+  uploadBatchId?: string
 ): Promise<BulkUploadResponse> {
   const formData = new FormData();
   if (exhibitionId) formData.append("exhibition_id", exhibitionId);
+  if (uploadBatchId) formData.append("upload_batch_id", uploadBatchId);
   files.forEach((file) => formData.append("files", file));
   return requestMultipart("/cards/bulk-upload", formData);
+}
+
+// Manual fallback for the rare miss automatic front/back/duplicate
+// detection doesn't catch — see card_service.merge_card. Folds cardId onto
+// targetCardId and returns the updated target.
+export function mergeCard(cardId: string, targetCardId: string): Promise<CardOut> {
+  return request(`/cards/${cardId}/merge`, {
+    method: "POST",
+    body: JSON.stringify({ target_card_id: targetCardId }),
+  });
 }
 
 export function getCard(cardId: string): Promise<CardDetailOut> {

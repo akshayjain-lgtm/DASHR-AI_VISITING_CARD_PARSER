@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Callable
 
 from fastapi import UploadFile
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -21,6 +21,8 @@ from app.services import billing, designation, exhibition_service, field_correct
 from app.services.enrichment_providers.local_presence_url_utils import _is_indiamart_url
 from app.services.exceptions import (
     BatchTooLargeError,
+    CannotMergeCardIntoSelfError,
+    CardAlreadyMergedError,
     CardAlreadyScoredError,
     CardHasMergedChildrenError,
     CardHasNoCompanyError,
@@ -39,6 +41,7 @@ from app.services.exceptions import (
 )
 from app.services.extraction_service import (
     _get_or_create_company,
+    _merge_fill_gaps,
     _normalize_email,
     _normalize_phone,
 )
@@ -100,6 +103,7 @@ def bulk_upload_cards(
     current_user: User,
     exhibition_id: uuid.UUID | None,
     files: list[UploadFile],
+    upload_batch_id: uuid.UUID | None = None,
 ) -> list[VisitingCard]:
     if exhibition_id is not None:
         # Raises ExhibitionNotFoundError before any file I/O if the
@@ -115,12 +119,32 @@ def bulk_upload_cards(
     # max_bulk_upload_files sequential, synchronous S3 calls.
     cards: list[VisitingCard] = []
     uploaded_keys: list[str] = []
-    # One id shared by every card in this request, so extraction can later
-    # correlate photos uploaded together (e.g. to detect a back-of-card scan
-    # immediately following its front) via batch_sequence order.
-    upload_batch_id = uuid.uuid4()
+    # One id shared by every card the caller considers part of the same
+    # upload, so extraction can later correlate photos uploaded together
+    # (e.g. to detect a back-of-card scan adjacent to its front) via
+    # batch_sequence order. The web client splits one user-initiated
+    # submission into several chunked requests (to stay under a tunneled
+    # dev URL's per-request size limit) and passes the SAME upload_batch_id
+    # on every chunk — a fresh id per chunk would silently break front/back
+    # detection at every chunk boundary. When a batch id is reused,
+    # batch_sequence continues from this user's highest existing sequence in
+    # that batch rather than restarting at 0, so sequence numbers stay
+    # unique and adjacent across chunks exactly as if they'd all been
+    # uploaded in one request.
+    if upload_batch_id is None:
+        upload_batch_id = uuid.uuid4()
+        start_sequence = 0
+    else:
+        max_sequence = db.scalar(
+            select(func.max(VisitingCard.batch_sequence)).where(
+                VisitingCard.upload_batch_id == upload_batch_id,
+                VisitingCard.user_id == current_user.user_id,
+            )
+        )
+        start_sequence = 0 if max_sequence is None else max_sequence + 1
     try:
-        for i, (f, data) in enumerate(validated):
+        for offset, (f, data) in enumerate(validated):
+            sequence = start_sequence + offset
             card_id = uuid.uuid4()
             ext = "." + f.content_type.split("/")[-1]
             key = f"cards/{current_user.user_id}/{card_id}{ext}"
@@ -135,7 +159,7 @@ def bulk_upload_cards(
                     image_url=key,
                     status="new",
                     upload_batch_id=upload_batch_id,
-                    batch_sequence=i,
+                    batch_sequence=sequence,
                 )
             )
     except Exception:
@@ -1039,6 +1063,68 @@ def enqueue_scoring(
         lambda card, billed: score_card_task.delay(str(card.card_id), billed=billed),
     )
     return enqueued, skipped, wallet_blocked
+
+
+def _card_as_merge_fields(db: Session, card: VisitingCard) -> dict:
+    """Reshapes an already-extracted, persisted VisitingCard (plus its
+    CardEmail/CardPhone rows and linked Company name) into the same dict
+    shape extraction_service._merge_fill_gaps expects from a fresh vision
+    extraction — lets merge_card fold one existing card onto another using
+    the identical gap-fill/dedup logic the automatic back-of-card/duplicate
+    merge path already uses, without re-running OCR."""
+    emails, phones = _load_emails_and_phones(db, card.card_id)
+    company = db.get(Company, card.company_id) if card.company_id else None
+    return {
+        "full_name": card.full_name,
+        "job_title": card.job_title,
+        "website": card.website,
+        "address": card.address,
+        "products_offered": card.products_offered,
+        "gst_number": card.gst_number,
+        "special_remark": card.special_remark,
+        "raw_ocr_text": card.raw_ocr_text,
+        "company_name": company.name if company else None,
+        "emails": [{"email": e.email, "email_type": e.email_type} for e in emails],
+        "phones": [
+            {"phone_e164": p.phone_e164, "phone_raw": p.phone_raw, "phone_type": p.phone_type}
+            for p in phones
+        ],
+    }
+
+
+def merge_card(
+    db: Session, current_user: User, card_id: uuid.UUID, target_card_id: uuid.UUID
+) -> VisitingCard:
+    """POST /cards/{card_id}/merge — the manual fallback for the rare miss
+    the automatic front/back and duplicate detection in extraction_service
+    doesn't catch (e.g. a back-of-card scan uploaded in an unrelated batch,
+    or a company name that reads differently front vs back). Deliberately
+    not exposed as a prominent action — the automatic path is expected to
+    handle the vast majority of cases; this exists so a stray miss can be
+    fixed from the UI without a DB migration.
+
+    Folds `card_id`'s already-extracted data onto `target_card_id` using
+    the same gap-fill/dedup logic (_merge_fill_gaps) an automatic merge
+    uses, then marks `card_id` merged. Both cards must be visible to
+    current_user and neither may already be merged into something else —
+    only a root (unmerged) card can be a merge source or target, so a
+    merge chain/cycle can never form. Never billed: this is fixing a
+    structural mistake in an already-paid-for parse, not a new action."""
+    if card_id == target_card_id:
+        raise CannotMergeCardIntoSelfError()
+
+    card = get_visible_card(db, current_user, card_id)
+    target = get_visible_card(db, current_user, target_card_id)
+
+    if card.merged_into_card_id is not None or target.merged_into_card_id is not None:
+        raise CardAlreadyMergedError()
+
+    fields = _card_as_merge_fields(db, card)
+    _merge_fill_gaps(db, target, fields)
+    card.merged_into_card_id = target.card_id
+    card.status = "merged"
+    db.commit()
+    return target
 
 
 def delete_card(

@@ -9,10 +9,12 @@ import {
   correctCardField,
   enrichCompany,
   getCard,
+  mergeCard,
   reprocessCard,
   scoreCard,
   type CardCompanyOut,
   type CardDetailOut,
+  type CardOut,
   type CorrectableFieldName,
 } from "@/lib/api";
 import { deleteConfirmCopy, useDeleteCardConfirm } from "@/lib/use-delete-card-confirm";
@@ -122,11 +124,17 @@ function InlineEditableValue({
 
 export function CardDetailDrawer({
   cardId,
+  candidateCards = [],
   onClose,
   onChanged,
   onNavigateToCard,
 }: {
   cardId: string;
+  // Pool of cards this one can be manually merged into (see "Merge into
+  // another card" below) — reuses the caller's already-fetched, already
+  // filter-scoped list rather than a dedicated search endpoint. Only cards
+  // that aren't themselves already merged are offered as targets.
+  candidateCards?: CardOut[];
   onClose: () => void;
   onChanged?: () => void;
   onNavigateToCard?: (cardId: string) => void;
@@ -312,6 +320,36 @@ export function CardDetailDrawer({
       setIsRefreshingCatalog(true);
     }
   }
+
+  // Manual merge fallback — deliberately tucked away, not a prominent
+  // action: automatic front/back-of-card and duplicate detection handles
+  // the vast majority of cases (see extraction_service.py), this exists
+  // only for the rare miss.
+  const [showMergePicker, setShowMergePicker] = useState(false);
+  const [mergeTargetId, setMergeTargetId] = useState("");
+  const [isMerging, setIsMerging] = useState(false);
+  const [mergeError, setMergeError] = useState<string | null>(null);
+
+  async function handleMerge() {
+    if (!mergeTargetId) return;
+    setIsMerging(true);
+    setMergeError(null);
+    try {
+      await mergeCard(cardId, mergeTargetId);
+      onChanged?.();
+      setCard(await getCard(cardId));
+      setShowMergePicker(false);
+      setMergeTargetId("");
+    } catch (err) {
+      setMergeError(err instanceof ApiError ? err.message : "Failed to merge card");
+    } finally {
+      setIsMerging(false);
+    }
+  }
+
+  const mergeCandidates = candidateCards.filter(
+    (c) => c.card_id !== cardId && !c.merged_into_card_id
+  );
 
   const deleteConfirm = deleteConfirmCopy(deleteState);
 
@@ -654,6 +692,61 @@ export function CardDetailDrawer({
                     {isRetrying ? "Retrying…" : "Retry"}
                   </OBtn>
                   {retryError && <p className="text-xs text-red-600">{retryError}</p>}
+                </div>
+              )}
+
+              {!card.merged_into_card_id && mergeCandidates.length > 0 && (
+                <div className="border-t border-black/8 pt-4">
+                  {!showMergePicker ? (
+                    <button
+                      onClick={() => setShowMergePicker(true)}
+                      className="text-[11px] text-black/30 hover:text-black/50 underline underline-offset-2"
+                    >
+                      Merge into another card…
+                    </button>
+                  ) : (
+                    <div className="space-y-2">
+                      <p className="text-[11px] text-black/40">
+                        Only use this if a back-of-card or duplicate scan wasn&apos;t
+                        automatically folded into its match.
+                      </p>
+                      <select
+                        value={mergeTargetId}
+                        onChange={(e) => setMergeTargetId(e.target.value)}
+                        disabled={isMerging}
+                        className="w-full border border-black/20 px-2 py-1 text-xs focus:outline-none focus:border-black/40"
+                      >
+                        <option value="">Select the card to merge into…</option>
+                        {mergeCandidates.map((c) => (
+                          <option key={c.card_id} value={c.card_id}>
+                            {c.full_name || c.original_filename || c.card_id}
+                            {c.company_name ? ` — ${c.company_name}` : ""}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={handleMerge}
+                          disabled={isMerging || !mergeTargetId}
+                          className="text-[11px] font-bold text-[#E65527] disabled:opacity-50"
+                        >
+                          {isMerging ? "Merging…" : "Merge"}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setShowMergePicker(false);
+                            setMergeTargetId("");
+                            setMergeError(null);
+                          }}
+                          disabled={isMerging}
+                          className="text-[11px] text-black/40 disabled:opacity-50"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                      {mergeError && <p className="text-[11px] text-red-600">{mergeError}</p>}
+                    </div>
+                  )}
                 </div>
               )}
 

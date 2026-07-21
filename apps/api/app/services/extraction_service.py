@@ -63,9 +63,12 @@ def extract_card(db: Session, card: VisitingCard) -> str:
             card.merged_into_card_id = sibling.card_id
             card.raw_ocr_text = fields["raw_ocr_text"]
             return "merged"
-        # No sibling found (first photo in the batch, or the true front was
-        # uploaded in a different batch) — fall through and process this as
-        # an ordinary card instead of losing the data.
+        # No sibling found (first/last photo in the batch, or the true front
+        # was uploaded in a different upload_batch_id entirely — see
+        # card_service.bulk_upload_cards for how a client-supplied batch id
+        # keeps chunked uploads of one submission in the same batch) — fall
+        # through and process this as an ordinary card instead of losing the
+        # data.
 
     owner = db.get(User, card.user_id)
     duplicate = _find_duplicate_card(db, owner, card, fields)
@@ -198,19 +201,33 @@ def _looks_like_back_of_card(fields: dict) -> bool:
 
 
 def _find_back_of_card_sibling(db: Session, card: VisitingCard) -> VisitingCard | None:
+    """A back-of-card scan's front isn't always the file uploaded right
+    before it — sellers commonly shoot front-then-back, but back-then-front
+    happens too (e.g. flipping through an already-photographed stack a
+    second time for the backs). Checks the preceding sequence first since
+    front-then-back is the more common order, then falls back to the
+    following one. Both neighbors are guaranteed to already exist as DB rows
+    by the time any card in the batch is extracted (bulk_upload_cards
+    inserts every card synchronously at upload time; extraction only starts
+    once the separate, explicit "Parse Cards" action is triggered), so
+    checking `+ 1` never races against a not-yet-created sibling row."""
     if card.upload_batch_id is None or card.batch_sequence is None:
         return None
-    stmt = (
-        select(VisitingCard)
-        .where(
-            VisitingCard.upload_batch_id == card.upload_batch_id,
-            VisitingCard.batch_sequence == card.batch_sequence - 1,
-            VisitingCard.user_id == card.user_id,
-            VisitingCard.status.notin_(_FOLDED_STATUSES),
+    for neighbor_sequence in (card.batch_sequence - 1, card.batch_sequence + 1):
+        stmt = (
+            select(VisitingCard)
+            .where(
+                VisitingCard.upload_batch_id == card.upload_batch_id,
+                VisitingCard.batch_sequence == neighbor_sequence,
+                VisitingCard.user_id == card.user_id,
+                VisitingCard.status.notin_(_FOLDED_STATUSES),
+            )
+            .limit(1)
         )
-        .limit(1)
-    )
-    return db.scalar(stmt)
+        sibling = db.scalar(stmt)
+        if sibling is not None:
+            return sibling
+    return None
 
 
 def _normalize_company_name(name: str) -> str:
@@ -374,37 +391,41 @@ def _merge_phones(db: Session, canonical: VisitingCard, new_phones: list[dict]) 
             existing_raw.add(phone["phone_raw"])
 
 
+_NEW_LEAD_SCALAR_ATTRS = (
+    "full_name",
+    "job_title",
+    "website",
+    "address",
+    "products_offered",
+    "gst_number",
+    "special_remark",
+    "raw_ocr_text",
+)
+
+
 def _apply_new_lead(db: Session, card: VisitingCard, fields: dict) -> None:
-    card.full_name = fields["full_name"]
-    card.job_title = fields["job_title"]
-    card.designation_level = designation.classify(fields["job_title"])
-    card.website = fields["website"]
-    card.address = fields["address"]
-    card.products_offered = fields["products_offered"]
-    card.gst_number = fields["gst_number"]
-    card.special_remark = fields["special_remark"]
-    card.raw_ocr_text = fields["raw_ocr_text"]
+    """Populates `card` from its own freshly-extracted `fields`. Only ever
+    assigns a scalar attr when `fields` actually has a value for it, and
+    only ever adds emails/phones that aren't already present — never blanks
+    an existing value or duplicates an existing contact record. Ordinarily
+    every field on a brand-new card starts empty, so this behaves exactly
+    like an unconditional assignment; it only matters when a back-of-card
+    sibling was already merged onto this card before this card's own
+    extraction ran (siblings can be processed in either order — see
+    _find_back_of_card_sibling), in which case it protects whatever the back
+    already filled in (e.g. a GST number only printed on the back, or an
+    email already merged in) from being nulled out or duplicated by a front
+    scan that simply doesn't mention that field."""
+    for attr in _NEW_LEAD_SCALAR_ATTRS:
+        if fields.get(attr):
+            setattr(card, attr, fields[attr])
+    if fields.get("job_title"):
+        card.designation_level = designation.classify(fields["job_title"])
 
-    company = _get_or_create_company(db, fields["company_name"], fields["website"])
-    if company is not None:
-        card.company_id = company.company_id
+    if fields["company_name"]:
+        company = _get_or_create_company(db, fields["company_name"], fields["website"])
+        if company is not None:
+            card.company_id = company.company_id
 
-    for email in fields["emails"]:
-        db.add(
-            CardEmail(
-                card_id=card.card_id,
-                email=email["email"],
-                email_type=email["email_type"],
-                is_primary=email["is_primary"],
-            )
-        )
-    for phone in fields["phones"]:
-        db.add(
-            CardPhone(
-                card_id=card.card_id,
-                phone_e164=phone["phone_e164"],
-                phone_raw=phone["phone_raw"],
-                phone_type=phone["phone_type"],
-                is_primary=phone["is_primary"],
-            )
-        )
+    _merge_emails(db, card, fields["emails"])
+    _merge_phones(db, card, fields["phones"])

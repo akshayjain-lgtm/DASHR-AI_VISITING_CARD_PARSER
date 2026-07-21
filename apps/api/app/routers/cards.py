@@ -17,6 +17,7 @@ from app.schemas.cards import (
     CardEnrichResponse,
     CardExportRequest,
     CardFieldCorrectionRequest,
+    CardMergeRequest,
     CardOut,
     CardProcessRequest,
     CardProcessResponse,
@@ -26,6 +27,8 @@ from app.schemas.cards import (
 from app.services import card_service, export_service
 from app.services.exceptions import (
     BatchTooLargeError,
+    CannotMergeCardIntoSelfError,
+    CardAlreadyMergedError,
     CardAlreadyScoredError,
     CardHasMergedChildrenError,
     CardHasNoCompanyError,
@@ -64,12 +67,18 @@ def _cascade_confirmation_detail(exc: CardHasMergedChildrenError, subject: str) 
 @router.post("/bulk-upload", status_code=201, response_model=BulkUploadResponse)
 def bulk_upload(
     exhibition_id: uuid.UUID | None = Form(default=None),
+    # Passed by the web client so several chunked requests making up one
+    # user-initiated submission share the same batch — see
+    # card_service.bulk_upload_cards for why that's required for front/back
+    # detection to work across chunk boundaries. Omitted by any other caller,
+    # in which case a fresh batch id is minted as before.
+    upload_batch_id: uuid.UUID | None = Form(default=None),
     files: list[UploadFile] = File(...),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     try:
-        cards = card_service.bulk_upload_cards(db, user, exhibition_id, files)
+        cards = card_service.bulk_upload_cards(db, user, exhibition_id, files, upload_batch_id)
     except ExhibitionNotFoundError:
         raise HTTPException(status_code=404, detail="Exhibition not found")
     except (
@@ -312,6 +321,31 @@ def score_card(
             detail="Wallet balance too low to score this card — recharge your wallet to continue",
         )
     return CardOut.model_validate(card_service.to_card_out(db, card))
+
+
+@router.post("/{card_id}/merge", response_model=CardOut)
+def merge_card(
+    card_id: uuid.UUID,
+    body: CardMergeRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Manual fallback for the rare miss automatic front/back and duplicate
+    detection doesn't catch — deliberately not a prominent action, see
+    card_service.merge_card's docstring. Folds card_id onto
+    body.target_card_id and marks card_id merged."""
+    try:
+        target = card_service.merge_card(db, user, card_id, body.target_card_id)
+    except CardNotFoundError:
+        raise HTTPException(status_code=404, detail="Card not found")
+    except CannotMergeCardIntoSelfError:
+        raise HTTPException(status_code=400, detail="A card can't be merged into itself")
+    except CardAlreadyMergedError:
+        raise HTTPException(
+            status_code=409,
+            detail="One of these cards is already merged into another card — merge into the original card instead",
+        )
+    return CardOut.model_validate(card_service.to_card_out(db, target))
 
 
 @router.delete("/{card_id}", status_code=204)
