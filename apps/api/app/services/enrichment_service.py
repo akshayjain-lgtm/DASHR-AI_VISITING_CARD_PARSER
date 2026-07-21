@@ -24,7 +24,9 @@ from app.services.enrichment_providers import (
     hiring_signal_provider,
     local_presence_provider,
     news_signal_provider,
+    news_summary_provider,
     registry_provider,
+    share_price_provider,
     trade_data_provider,
     website_signal_provider,
 )
@@ -54,6 +56,11 @@ _PAID_UP_CAPITAL_BAND_THRESHOLDS: tuple[tuple[Decimal, str], ...] = (
     (Decimal("100000000"), "₹1–10 Cr paid-up capital"),
 )
 _PAID_UP_CAPITAL_TOP_BAND = "> ₹10 Cr paid-up capital"
+
+# Lead-scoring v2's shared expansion/revenue-growth distress override (see
+# .claude/specs/10-lead-scoring.md "v2 rework only") fires when a QOQ
+# share-price change is at or below this threshold.
+_SIGNIFICANT_DECLINE_THRESHOLD_PCT = Decimal("-10")
 
 
 def classify_hiring_signal(active_job_postings_count: int | None) -> str | None:
@@ -254,7 +261,52 @@ def run_all_signal_lookups(
             _SUPPLIER_PROFILE_FIELDS,
         ))
 
+    # 13. Combined AI summary of multiple full news articles, feeding
+    # lead-scoring v2's expansion_signal_score/revenue_growth_score only
+    # (see .claude/specs/10-lead-scoring.md "v2 rework only"). Lookup #9's
+    # recent_news_signals write above is untouched, still serving this
+    # module's own general enrichment/display purposes. distress_detected
+    # is captured locally, not merged into `data` directly (no such
+    # CompanySignals column) — combined with the share-price check below.
+    # `tags` is persisted as news_tags so scoring.py can read Claude's own
+    # classification directly, instead of re-deriving it via a second,
+    # independently-maintained keyword scan of news_summary's plain text.
+    news_summary_fields = _run_lookup(
+        db, company.company_id, "news_summary",
+        lambda: news_summary_provider.get_news_summary_provider().summarize(name, company.hq_city),
+        ["news_summary", "tags", "distress_detected"],
+    )
+    news_distress_from_articles = bool(news_summary_fields.get("distress_detected"))
+    if news_summary_fields.get("news_summary"):
+        data["news_summary"] = news_summary_fields["news_summary"]
+        data["news_summary_generated_at"] = datetime.now(timezone.utc)
+        data["news_tags"] = list(news_summary_fields.get("tags") or [])
+
+    # 14. Share-price QOQ lookup — only meaningful for a publicly-listed
+    # company; contributes nothing extra for the common unlisted case.
+    share_price_fields = _run_lookup(
+        db, company.company_id, "share_price",
+        lambda: share_price_provider.get_share_price_provider().lookup(name, company.hq_city),
+        ["is_publicly_listed", "qoq_growth_pct"],
+    )
+    qoq_growth_pct = share_price_fields.get("qoq_growth_pct")
+    if share_price_fields.get("is_publicly_listed"):
+        data["share_price_qoq_growth_pct"] = qoq_growth_pct
+
+    # any_signal_found must be computed before news_distress_detected is
+    # added below — that field is always a real bool (True or False, never
+    # None), so including it here would make any_signal_found permanently
+    # True regardless of whether any lookup actually found anything.
     any_signal_found = any(value is not None for value in data.values())
+
+    # Shared distress override (spec "v2 criteria" #5/#6): computed here,
+    # not inside either provider, since it depends on both lookups' results
+    # together — can't go through the generic per-field _run_lookup
+    # mechanism cleanly.
+    significant_decline = (
+        qoq_growth_pct is not None and qoq_growth_pct <= _SIGNIFICANT_DECLINE_THRESHOLD_PCT
+    )
+    data["news_distress_detected"] = news_distress_from_articles or significant_decline
 
     signals = db.get(CompanySignals, company.company_id)
     if signals is None:

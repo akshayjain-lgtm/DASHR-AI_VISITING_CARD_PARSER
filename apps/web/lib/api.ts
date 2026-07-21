@@ -666,6 +666,9 @@ export function listCards(
     // Filters to cards with no exhibition assigned (the upload page's
     // "General capture" filter) — mutually exclusive with exhibition_id.
     unassigned?: boolean;
+    // Admin-only "uploaded by" filter — ignored server-side (scoped down to
+    // nothing) if the caller isn't an admin.
+    user_id?: string;
     limit?: number;
     offset?: number;
   } = {}
@@ -675,6 +678,7 @@ export function listCards(
   if (params.status) query.set("status", params.status);
   if (params.include_folded) query.set("include_folded", "true");
   if (params.unassigned) query.set("unassigned", "true");
+  if (params.user_id) query.set("user_id", params.user_id);
   if (params.limit != null) query.set("limit", String(params.limit));
   if (params.offset != null) query.set("offset", String(params.offset));
   const qs = query.toString();

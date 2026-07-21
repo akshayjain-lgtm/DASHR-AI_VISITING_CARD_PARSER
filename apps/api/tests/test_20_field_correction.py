@@ -282,10 +282,18 @@ def test_correct_job_title_then_rescore_reflects_new_designation_score(
     """End-to-end regression for the reported bug: correcting role from
     Proprietor to Sales, then rescoring, must actually move the
     designation_score component — not silently keep scoring off the
-    pre-correction title."""
+    pre-correction title.
+
+    Pinned to v1 (via select_scoring_version) since this test asserts on
+    v1's designation_score key specifically — the free rescore this
+    correction unlocks stays pinned to that same version automatically
+    (see .claude/specs/10-lead-scoring.md "Scoring versioning & A/B
+    experimentation"), so no second patch is needed for the rescore call.
+    """
     _authenticated_user(client, fake_otp_provider)
     card_id = _extracted_card(client, jpeg_bytes, monkeypatch, job_title="Proprietor")
 
+    monkeypatch.setattr("app.services.scoring.select_scoring_version", lambda user_id: "v1")
     score_card_task(card_id)  # real scoring run (bare call, bypassing .delay())
     db_session.expire_all()
     card = db_session.get(VisitingCard, uuid.UUID(card_id))

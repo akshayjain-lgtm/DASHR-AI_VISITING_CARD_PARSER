@@ -230,6 +230,38 @@ describe("Card detail drawer scoring CTA", () => {
       screen.getByText("This card has already been scored — correct a field to unlock a free rescore.")
     ).toBeInTheDocument();
   });
+
+  it("renders an 8-key v2 score breakdown generically, without assuming the 5 v1 keys", async () => {
+    const v2ScoredCard: CardDetailOut = {
+      ...sampleCardDetail,
+      status: "extracted",
+      lead_score: 100,
+      score_breakdown: {
+        remark_signal_score: 24,
+        product_fit_score: 20,
+        role_designation_score: 16,
+        proximity_score: 12,
+        expansion_signal_score: 10,
+        revenue_growth_score: 8,
+        company_size_score: 6,
+        marketplace_rating_score: 4,
+        total: 100,
+        version: "v2",
+      },
+      scored_at: "2026-07-10T12:00:00Z",
+    };
+    const { fetchMock } = createApiMock({ card: v2ScoredCard });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<CardDetailDrawer cardId="card-1" onClose={vi.fn()} />);
+
+    // A v2-only pill proves the drawer isn't hardcoded to the 5 v1 keys,
+    // and "total"/"version" are excluded from the pill row itself.
+    expect(await screen.findByText("marketplace rating: 4")).toBeInTheDocument();
+    expect(screen.getByText("remark signal: 24")).toBeInTheDocument();
+    expect(screen.queryByText(/^total:/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^version:/)).not.toBeInTheDocument();
+  });
 });
 
 // ======================================================================

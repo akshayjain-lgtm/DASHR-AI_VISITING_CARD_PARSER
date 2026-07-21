@@ -168,6 +168,7 @@ def list_cards(
     offset: int,
     include_folded: bool = False,
     unassigned: bool = False,
+    user_id: uuid.UUID | None = None,
 ) -> list[dict]:
     stmt = scope_to_visible_users(
         select(VisitingCard, Company.name, Company.enrichment_status).outerjoin(
@@ -176,6 +177,13 @@ def list_cards(
         current_user,
         VisitingCard.user_id,
     )
+    # Narrows further to one uploader within whatever scope_to_visible_users
+    # already allowed — for a non-admin (already restricted to their own
+    # rows) this can only ever narrow to "self or nothing", never widen
+    # visibility, so it's safe to accept from any caller. Used by the admin
+    # "uploaded by" filter on the upload page.
+    if user_id is not None:
+        stmt = stmt.where(VisitingCard.user_id == user_id)
     # unassigned=True (the "General capture" filter) takes priority over an
     # exhibition_id, which the caller never sends alongside it anyway — this
     # mirrors the "no exhibition" bucket in the upload page's exhibition

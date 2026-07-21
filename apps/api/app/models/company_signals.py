@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, ForeignKey, Numeric, text
+from sqlalchemy import Boolean, ForeignKey, Numeric, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -63,6 +63,21 @@ class CompanySignals(Base):
     import_export_activity: Mapped[bool | None] = mapped_column(Boolean)
     shipment_count_last_12m: Mapped[int | None]
     recent_news_signals: Mapped[list | None] = mapped_column(JSONB)
+
+    # Lead-scoring v2 refinement: an AI-generated combined summary of
+    # multiple full news articles (see news_summary_provider.py) plus a
+    # share-price QOQ lookup — additive alongside recent_news_signals
+    # above, which keeps being populated unchanged for step 07's own
+    # general enrichment/display purposes.
+    news_summary: Mapped[str | None] = mapped_column(Text)
+    news_summary_generated_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    # Claude's own classification of the summarized articles (subset of
+    # "funding"/"expansion"/"new_facility"/"revenue_growth") — scoring.py
+    # reads this directly rather than re-deriving the same classification
+    # via a second, independently-maintained keyword scan of news_summary.
+    news_tags: Mapped[list | None] = mapped_column(JSONB)
+    share_price_qoq_growth_pct: Mapped[Decimal | None] = mapped_column(Numeric)
+    news_distress_detected: Mapped[bool | None] = mapped_column(Boolean)
 
     # Local presence (public Google Maps search results / IndiaMART-TradeIndia-JustDial listings)
     google_rating: Mapped[Decimal | None] = mapped_column(Numeric)
