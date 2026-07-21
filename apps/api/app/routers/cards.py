@@ -177,13 +177,17 @@ def list_cards(
     # bucket in the upload page's exhibition picker) — distinct from omitting
     # exhibition_id, which returns cards across every exhibition.
     unassigned: bool = False,
+    # Admin-only "uploaded by" filter on the upload page — narrows within
+    # whatever scope_to_visible_users already allows, so a non-admin passing
+    # someone else's id just gets an empty result, never a leak.
+    user_id: uuid.UUID | None = None,
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     cards = card_service.list_cards(
-        db, user, exhibition_id, status, limit, offset, include_folded, unassigned
+        db, user, exhibition_id, status, limit, offset, include_folded, unassigned, user_id
     )
     return [CardOut.model_validate(c) for c in cards]
 

@@ -3,18 +3,39 @@ import uuid
 from datetime import datetime, timezone
 
 from celery.exceptions import MaxRetriesExceededError
+from sqlalchemy import select
 
 from app.db.session import SessionLocal
+from app.models.card_phone import CardPhone
 from app.models.company import Company
 from app.models.company_signals import CompanySignals
+from app.models.seller_profile import SellerProfile
 from app.models.user import User
 from app.models.visiting_card import VisitingCard
-from app.services import billing, field_correction_service, profile_service, scoring
+from app.services import (
+    billing,
+    field_correction_service,
+    geocode_service,
+    product_fit_service,
+    profile_service,
+    scoring,
+)
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
 _MAX_SCORING_RETRIES = 3
+
+# Cost-avoidance: only versions that actually read product_fit_verdict/
+# distance_km trigger the Claude/geocoding I/O below — v1 ignores both
+# params anyway (see scoring.py's _calculate_score_v1_adapter), so doing
+# the real network/Claude work only to have it discarded would be wasted.
+_VERSIONS_NEEDING_PRODUCT_FIT_AND_GEOCODING = frozenset({"v2"})
+
+
+def _build_product_signature(seller_profile: SellerProfile) -> str | None:
+    parts = [p for p in (seller_profile.product_lines, seller_profile.industry) if p and p.strip()]
+    return " ".join(parts) if parts else None
 
 
 @celery_app.task(
@@ -57,6 +78,11 @@ def score_card_task(self, card_id: str, billed: bool = False) -> None:
     billing.charge_for_action, so refund_action must never be called for
     it on retry exhaustion — that would incorrectly decrement the user's
     free-allowance count for an action they never actually used it on.
+    `is_rescore` also gates scoring-version resolution: a rescore is always
+    pinned to the version already stored on the card's score_breakdown
+    (see .claude/specs/10-lead-scoring.md "Scoring versioning & A/B
+    experimentation") rather than re-rolling the experiment assignment, so
+    a correction can change a card's score but never its scoring version.
 
     Seller calibration is loaded from the card's own owner (card.user_id),
     not whoever triggered this task — matters when an org admin scores a
@@ -91,7 +117,41 @@ def score_card_task(self, card_id: str, billed: bool = False) -> None:
             )
             owner = db.get(User, card.user_id)
             seller_profile = profile_service.get_or_empty_profile(db, owner)
-            breakdown = scoring.calculate_score(card, company, signals, seller_profile)
+
+            phones = db.execute(
+                select(CardPhone).where(CardPhone.card_id == card.card_id)
+            ).scalars().all()
+            existing_phones = [p.phone_e164 for p in phones if p.phone_e164] + [
+                p.phone_raw for p in phones if p.phone_raw
+            ]
+
+            if is_rescore:
+                # Never re-roll the experiment assignment on a rescore — a
+                # correction can change a card's score but never its version.
+                version = card.score_breakdown["version"]
+            else:
+                version = scoring.select_scoring_version(card.user_id)
+
+            product_fit_verdict: str | None = None
+            distance_km: float | None = None
+            if version in _VERSIONS_NEEDING_PRODUCT_FIT_AND_GEOCODING:
+                product_signature = _build_product_signature(seller_profile)
+                if company is not None and product_signature:
+                    product_fit_verdict = product_fit_service.get_or_judge_fit(
+                        db, product_signature, company.industry,
+                        signals.indiamart_business_type if signals else None,
+                    )
+
+                buyer_address = card.address or (company.hq_city if company else None)
+                buyer_point = geocode_service.get_or_geocode(db, buyer_address)
+                seller_point = geocode_service.get_or_geocode(db, seller_profile.billing_address)
+                if buyer_point is not None and seller_point is not None:
+                    distance_km = geocode_service.haversine_km(buyer_point, seller_point)
+
+            breakdown = scoring.calculate_score(
+                card, company, signals, seller_profile, existing_phones,
+                product_fit_verdict, distance_km, version=version,
+            )
         except Exception as exc:
             countdown = 2**self.request.retries
             try:

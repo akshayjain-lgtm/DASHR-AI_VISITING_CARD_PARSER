@@ -526,22 +526,13 @@ export function CardDetailDrawer({
                     </p>
                     {card.score_breakdown && (
                       <div className="flex flex-wrap gap-1">
-                        {(() => {
-                          const breakdown = card.score_breakdown;
-                          return (
-                            [
-                              "designation_score",
-                              "company_size_score",
-                              "industry_fit_score",
-                              "momentum_signal_score",
-                              "remark_signal_score",
-                            ] as const
-                          ).map((key) => (
+                        {Object.entries(card.score_breakdown)
+                          .filter(([key]) => key !== "total" && key !== "version")
+                          .map(([key, value]) => (
                             <SignalBadge key={key}>
-                              {key.replace(/_score$/, "").replace(/_/g, " ")}: {breakdown[key]}
+                              {key.replace(/_score$/, "").replace(/_/g, " ")}: {value}
                             </SignalBadge>
-                          ));
-                        })()}
+                          ))}
                       </div>
                     )}
                     {card.scored_at && (
