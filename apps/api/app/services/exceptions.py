@@ -128,9 +128,11 @@ class CardHasNoCompanyError(Exception):
 
 class CompanyNotEligibleForEnrichmentError(Exception):
     """Raised by POST /cards/{card_id}/enrich-company when the linked Company's
-    enrichment_status isn't 'pending' — already enriching, enriched, not_found, or
-    failed. Enrichment is a one-shot action per company, not re-triggerable on demand
-    from this endpoint."""
+    enrichment_status is 'enriching', 'not_found', or 'failed' — those stay
+    one-shot, not re-triggerable from this endpoint. Also raised for an
+    'enriched' company when neither of the two refresh reasons applies (no
+    stale CompanySignals tier and this card's own lead-cooldown hasn't
+    elapsed yet — see .claude/specs/24-company-linkage-tiered-expiry.md)."""
 
 
 class CardHasMergedChildrenError(Exception):

@@ -17,7 +17,15 @@ from app.models.exhibition import Exhibition
 from app.models.field_correction import FieldCorrection
 from app.models.user import User
 from app.models.visiting_card import VisitingCard
-from app.services import billing, designation, exhibition_service, field_correction_service, storage_service
+from app.services import (
+    billing,
+    designation,
+    enrichment_service,
+    exhibition_service,
+    field_correction_service,
+    lead_cooldown_service,
+    storage_service,
+)
 from app.services.enrichment_providers.local_presence_url_utils import _is_indiamart_url
 from app.services.exceptions import (
     BatchTooLargeError,
@@ -66,6 +74,19 @@ def _card_scoring_fields(card: VisitingCard) -> dict:
         "score_breakdown": card.score_breakdown,
         "scored_at": card.scored_at,
     }
+
+
+def _monthly_rescore_available(db: Session, card: VisitingCard) -> bool:
+    """Shared by to_card_out/get_card_detail — the billed, cooldown-based
+    rescore path from .claude/specs/24-company-linkage-tiered-expiry.md.
+    False whenever the free correction-triggered rescore already applies
+    (that one takes priority, see score_card_now) or the card has never
+    been scored at all."""
+    return (
+        card.lead_score is not None
+        and not field_correction_service.has_correction_since_score(db, card)
+        and lead_cooldown_service.cooldown_elapsed(card)
+    )
 
 
 def _read_and_validate_batch(files: list[UploadFile]) -> list[tuple[UploadFile, bytes]]:
@@ -376,6 +397,7 @@ def to_card_out(db: Session, card: VisitingCard) -> dict:
         "company_enrichment_status": company_enrichment_status,
         **_card_scoring_fields(card),
         "rescore_available": field_correction_service.has_correction_since_score(db, card),
+        "monthly_rescore_available": _monthly_rescore_available(db, card),
     }
 
 
@@ -464,6 +486,7 @@ def get_card_detail(db: Session, current_user: User, card_id: uuid.UUID) -> dict
         "created_at": card.created_at,
         **_card_scoring_fields(card),
         "rescore_available": field_correction_service.has_correction_since_score(db, card),
+        "monthly_rescore_available": _monthly_rescore_available(db, card),
         "company": {
             "company_id": company.company_id,
             "name": company.name,
@@ -472,6 +495,11 @@ def get_card_detail(db: Session, current_user: User, card_id: uuid.UUID) -> dict
             "enrichment_status": company.enrichment_status,
             "summary": company.summary,
             "summary_generated_at": company.summary_generated_at,
+            "is_linked_org": company.linked_org_id is not None,
+            "refresh_available": (
+                company.enrichment_status == "enriched"
+                and bool(enrichment_service.stale_tiers(signals) or lead_cooldown_service.cooldown_elapsed(card))
+            ),
             **{field: getattr(signals, field) if signals else None for field in _COMPANY_SIGNAL_FIELDS},
         }
         if company
@@ -883,13 +911,48 @@ def enrich_company_now(db: Session, current_user: User, card_id: uuid.UUID) -> V
     Enrichment never runs automatically after parsing; a seller has to ask for
     it, mirroring how "Parse Cards" is itself a separate explicit action from
     upload rather than an automatic side effect.
+
+    Beyond the original one-shot "pending" -> billed first run, an already-
+    `"enriched"` company can be re-enriched (also billed, every time,
+    regardless of whether anything is actually re-fetched underneath — see
+    .claude/specs/24-company-linkage-tiered-expiry.md) for either of two
+    independent reasons: the shared CompanySignals cache has a stale tier
+    (enrichment_service.stale_tiers), or this specific card's own
+    lead-cooldown has elapsed (lead_cooldown_service.cooldown_elapsed) —
+    unrelated concepts, see lead_cooldown_service's module docstring.
+
+    for_update=True locks the card row for the rest of this transaction —
+    closes the double-click/two-tab race on the cooldown-eligible branch:
+    the second concurrent request blocks until the first commits, then
+    re-reads company_enriched_at as already-just-reset and correctly
+    re-evaluates cooldown_elapsed as False (same pattern reprocess_card uses
+    for its own status-flip race).
     """
-    card = get_visible_card(db, current_user, card_id)
+    card = get_visible_card(db, current_user, card_id, for_update=True)
     if card.company_id is None:
         raise CardHasNoCompanyError()
 
     company = db.get(Company, card.company_id)
-    if company is None or company.enrichment_status != "pending":
+    if company is None:
+        raise CompanyNotEligibleForEnrichmentError()
+
+    if company.enrichment_status == "pending":
+        refresh_tiers: list[str] | None = None
+    elif company.enrichment_status == "enriched":
+        existing_signals = db.get(CompanySignals, company.company_id)
+        stale = enrichment_service.stale_tiers(existing_signals)
+        cooldown_ok = lead_cooldown_service.cooldown_elapsed(card)
+        if not stale and not cooldown_ok:
+            raise CompanyNotEligibleForEnrichmentError()
+        # Stage the flip without committing yet — charge_for_action's own
+        # commit (below) persists this together with the charge as one
+        # atomic transaction, same pattern reprocess_card uses for its own
+        # staged status flip. Always stamped on any refresh (not just a
+        # cooldown-only trigger) so company_enriched_at always reflects this
+        # card's most recent successful ask, whichever reason unlocked it.
+        card.company_enriched_at = datetime.now(timezone.utc)
+        refresh_tiers = stale
+    else:
         raise CompanyNotEligibleForEnrichmentError()
 
     billed = billing.charge_for_action(
@@ -897,7 +960,9 @@ def enrich_company_now(db: Session, current_user: User, card_id: uuid.UUID) -> V
     )
 
     try:
-        enrich_company_task.delay(str(card.company_id), str(card.card_id), billed=billed)
+        enrich_company_task.delay(
+            str(card.company_id), str(card.card_id), billed=billed, refresh_tiers=refresh_tiers
+        )
     except Exception:
         logger.exception(
             "Failed to enqueue enrich_company_task for company_id=%s", card.company_id
@@ -969,31 +1034,58 @@ def enqueue_enrichment(
 def score_card_now(db: Session, current_user: User, card_id: uuid.UUID) -> VisitingCard:
     """The explicit "Score Card" CTA — POST /cards/{card_id}/score.
 
-    Scoring is one-shot per card *unless* a field was corrected since the
-    last score (see .claude/specs/20-field-correction.md's rescore
-    amendment): once lead_score is set, re-scoring is rejected
-    (CardAlreadyScoredError) unless a FieldCorrection row postdates
-    scored_at, in which case a rescore is allowed and — since the seller is
-    only asking the score to reflect a mistake DASHR's own AI made, not
-    requesting a brand new action — it's free: no charge_for_action call at
-    all, never billed and never counted against the free allowance either.
+    Scoring is one-shot per card *unless* one of two independent reasons
+    unlocks a rescore:
+    - A field was corrected since the last score (see
+      .claude/specs/20-field-correction.md's rescore amendment) — free: no
+      charge_for_action call at all, since the seller is only asking the
+      score to reflect a mistake DASHR's own AI made, not requesting a brand
+      new action.
+    - This card's own per-lead cooldown has elapsed (see
+      lead_cooldown_service.py, .claude/specs/24-company-linkage-tiered-expiry.md)
+      — billed exactly like a first-ever score, unlike the free correction
+      path. Checked only when the free reason doesn't already apply, so a
+      card eligible for both always takes the free path. Firing this reason
+      re-arms the card's cooldown (stages a fresh `company_enriched_at`
+      before the charge, mirroring `enrich_company_now`'s identical
+      pattern) — without this, the flag would stay true forever after the
+      first 30 days and a repeat "Rescore" click (or two racing ones) could
+      each independently re-bill the same card with no bound.
+
+    for_update=True locks the card row for the rest of this transaction —
+    same rationale as `enrich_company_now`: closes the double-click/two-tab
+    race on the cooldown-triggered branch, since the second concurrent
+    request blocks until the first commits, then re-reads
+    `company_enriched_at` as already-reset and correctly re-evaluates
+    `cooldown_elapsed` as `False`.
+
     Enforced here, not just hidden in the UI, so a direct API call can't
-    bypass the one-shot rule (or abuse the free-rescore carve-out on a card
-    with no actual correction).
+    bypass the one-shot rule (or abuse either rescore carve-out without its
+    condition actually being true).
     """
-    card = get_visible_card(db, current_user, card_id)
+    card = get_visible_card(db, current_user, card_id, for_update=True)
     if card.status != "extracted":
         raise CardNotEligibleForScoringError()
 
-    rescoring = False
+    free_rescore = False
+    cooldown_rescore = False
     if card.lead_score is not None:
-        if not field_correction_service.has_correction_since_score(db, card):
-            raise CardAlreadyScoredError()
-        rescoring = True
+        free_rescore = field_correction_service.has_correction_since_score(db, card)
+        if not free_rescore:
+            cooldown_rescore = lead_cooldown_service.cooldown_elapsed(card)
+            if not cooldown_rescore:
+                raise CardAlreadyScoredError()
+
+    if cooldown_rescore:
+        # Stage the re-arm without committing yet — charge_for_action's own
+        # commit (below) persists this together with the charge as one
+        # atomic transaction, identical to enrich_company_now's staged
+        # company_enriched_at reset.
+        card.company_enriched_at = datetime.now(timezone.utc)
 
     billed = (
         False
-        if rescoring
+        if free_rescore
         else billing.charge_for_action(db, current_user.user_id, "scoring", reference_id=card.card_id)
     )
 
@@ -1001,7 +1093,7 @@ def score_card_now(db: Session, current_user: User, card_id: uuid.UUID) -> Visit
         score_card_task.delay(str(card.card_id), billed=billed)
     except Exception:
         logger.exception("Failed to enqueue score_card_task for card_id=%s", card.card_id)
-        if not rescoring:
+        if not free_rescore:
             # Never even queued — reverse the charge (see reprocess_card's
             # identical rationale). A free rescore never called
             # charge_for_action in the first place, so there is nothing to

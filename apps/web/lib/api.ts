@@ -202,6 +202,10 @@ export type CardOut = {
   // rescore is allowed (never billed, never counted against the free
   // allowance).
   rescore_available: boolean;
+  // True when rescore_available is false but this card's per-lead cooldown
+  // has elapsed — a rescore is still allowed, but billed like a first-ever
+  // score.
+  monthly_rescore_available: boolean;
 };
 
 export type CardCompanyOut = {
@@ -213,6 +217,12 @@ export type CardCompanyOut = {
   enrichment_status: string;
   summary: string | null;
   summary_generated_at: string | null;
+  // True when this prospect is itself a registered DASHR org.
+  is_linked_org: boolean;
+  // True when enrichment_status is "enriched" and a refresh is available
+  // (billed) — either a CompanySignals tier has gone stale, or this card's
+  // own lead-cooldown has elapsed.
+  refresh_available: boolean;
   linkedin_employee_count: number | null;
   estimated_revenue_band: string | null;
   gstin_verified: boolean | null;
@@ -279,6 +289,9 @@ export type CardDetailOut = {
   // rescore is allowed (never billed, never counted against the free
   // allowance).
   rescore_available: boolean;
+  // True when rescore_available is false but this card's per-lead cooldown
+  // has elapsed — a rescore is still allowed, but billed.
+  monthly_rescore_available: boolean;
   company: CardCompanyOut | null;
   emails: CardEmailOut[];
   phones: CardPhoneOut[];

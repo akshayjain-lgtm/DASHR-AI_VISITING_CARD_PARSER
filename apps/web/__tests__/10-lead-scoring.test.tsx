@@ -68,6 +68,7 @@ const sampleCardDetail: CardDetailOut = {
   score_breakdown: null,
   scored_at: null,
   rescore_available: false,
+  monthly_rescore_available: false,
   company: null,
   emails: [],
   phones: [],
@@ -200,11 +201,13 @@ describe("Card detail drawer scoring CTA", () => {
       },
       scored_at: "2026-07-10T12:00:00Z",
       rescore_available: true,
+      monthly_rescore_available: false,
     };
     const rescoredCard: CardDetailOut = {
       ...scoredWithCorrection,
       scored_at: "2026-07-10T14:00:00Z",
       rescore_available: false,
+      monthly_rescore_available: false,
     };
     const { fetchMock, scoreCallsSingle } = createApiMock({
       card: scoredWithCorrection,
@@ -293,6 +296,7 @@ function makeUploadCard(params: {
     score_breakdown: null,
     scored_at: params.scored_at,
     rescore_available: false,
+    monthly_rescore_available: false,
   };
 }
 

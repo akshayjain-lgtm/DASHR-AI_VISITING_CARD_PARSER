@@ -1,6 +1,7 @@
 import io
 import logging
 import re
+from datetime import datetime, timezone
 
 import phonenumbers
 import pillow_heif
@@ -15,6 +16,7 @@ from app.models.company import Company
 from app.models.user import User
 from app.models.visiting_card import VisitingCard
 from app.services import designation, storage_service, vision_client
+from app.services.company_name_utils import normalize_company_name
 from app.services.exceptions import ExtractionValidationError
 from app.services.visibility import scope_to_visible_users
 
@@ -230,13 +232,6 @@ def _find_back_of_card_sibling(db: Session, card: VisitingCard) -> VisitingCard 
     return None
 
 
-def _normalize_company_name(name: str) -> str:
-    """Whitespace/case normalization only — no legal-suffix stripping or
-    fuzzy matching. That richer normalization is 06-company-enrichment's
-    job, not this one's."""
-    return " ".join(name.strip().lower().split())
-
-
 def _normalize_person_name(name: str) -> str:
     return " ".join(name.strip().lower().split())
 
@@ -275,7 +270,7 @@ def _find_duplicate_card(
 
     if fields["full_name"] and fields["company_name"]:
         normalized_name = _normalize_person_name(fields["full_name"])
-        normalized_company = _normalize_company_name(fields["company_name"])
+        normalized_company = normalize_company_name(fields["company_name"])
         stmt = base.join(Company, Company.company_id == VisitingCard.company_id).where(
             VisitingCard.full_name.isnot(None),
             Company.normalized_name == normalized_company,
@@ -291,7 +286,7 @@ def _find_duplicate_card(
 def _get_or_create_company(db: Session, company_name: str | None, website: str | None) -> Company | None:
     if not company_name:
         return None
-    normalized_name = _normalize_company_name(company_name)
+    normalized_name = normalize_company_name(company_name)
     existing = db.scalar(select(Company).where(Company.normalized_name == normalized_name))
     if existing is not None:
         if website and not existing.website:
@@ -302,6 +297,18 @@ def _get_or_create_company(db: Session, company_name: str | None, website: str |
     db.add(company)
     db.flush()  # populate company.company_id (server_default gen_random_uuid()) before use
     return company
+
+
+def _stamp_company_enriched_at(card: VisitingCard, company: Company) -> None:
+    """Sets the per-lead cooldown anchor (see lead_cooldown_service.py,
+    .claude/specs/24-company-linkage-tiered-expiry.md) the moment a card is
+    linked to a company that's already settled — this card never itself
+    calls enrich_company_task, so this is its only path to getting a
+    cooldown anchor at all. A company still "pending"/"enriching" leaves
+    card.company_enriched_at null for now; it gets filled in later by
+    enrich_company_task's own bulk stamping step once that run completes."""
+    if company.enrichment_status in ("enriched", "not_found"):
+        card.company_enriched_at = datetime.now(timezone.utc)
 
 
 def _merge_fill_gaps(db: Session, canonical: VisitingCard, fields: dict) -> None:
@@ -329,6 +336,7 @@ def _merge_fill_gaps(db: Session, canonical: VisitingCard, fields: dict) -> None
         company = _get_or_create_company(db, fields["company_name"], fields["website"])
         if company is not None:
             canonical.company_id = company.company_id
+            _stamp_company_enriched_at(canonical, company)
 
     _merge_emails(db, canonical, fields["emails"])
     _merge_phones(db, canonical, fields["phones"])
@@ -426,6 +434,7 @@ def _apply_new_lead(db: Session, card: VisitingCard, fields: dict) -> None:
         company = _get_or_create_company(db, fields["company_name"], fields["website"])
         if company is not None:
             card.company_id = company.company_id
+            _stamp_company_enriched_at(card, company)
 
     _merge_emails(db, card, fields["emails"])
     _merge_phones(db, card, fields["phones"])
