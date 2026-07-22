@@ -13,6 +13,7 @@ Core workflows:
 6. **Billing** — sellers recharge their prepaid INR wallet via Razorpay, and each recharge generates an invoice (service name "Visiting Card Recharge and Scoring") viewable in their account
 7. **Wallet usage** — every parse/enrich/score action debits the acting user's own wallet, after each user's first 20 free actions per action type (parse/enrich/score) are used up; once free allowance is exhausted, no parse/enrich/score action is allowed to run at a 0 wallet balance; once free allowance is exhausted, no parse/enrich/score action is allowed to run at a 0 wallet balance
 8. **Analytics dashboard** — a filterable visual summary layer (lead volume, industry mix, score distribution, exhibition performance, role mix, region mix) so sellers get at-a-glance triage across exhibitions; row-by-row lead review happens on the Upload page, not here
+9. **Feedback & support** — a Feedback page, reached via its own nav item in the logged-in app's sidebar (positioned just below Settings and FAQ), where a visitor can tell us what's working and what isn't; submissions are stored for later internal product review, never surfaced back to any user. The same page has a "raise a query" section for support questions, which assigns a ticket id and emails the full query to info@dashrtech.com
 
 This is a greenfield repo — no application code exists yet. This file define
 s the target architecture new work should scaffold toward, not a description of code that already exists. Treat structural claims below as the plan, not as verified fact, until the corresponding code lands.
@@ -27,21 +28,22 @@ Two-service architecture: a Next.js frontend/BFF for the SaaS UI and auth, and a
 dashr-ai/
 ├── apps/
 │   ├── web/                      # Next.js 14 (App Router, TypeScript) — SaaS frontend + BFF
-│   │   ├── app/                  # Routes: dashboard (leads+analytics), upload, exhibitions, wallet, account, settings, (marketing)/privacy-policy, (marketing)/terms-of-use
+│   │   ├── app/                  # Routes: dashboard (leads+analytics), upload, exhibitions, wallet, account, settings, feedback, (marketing)/privacy-policy, (marketing)/terms-of-use, (marketing)/faq
 │   │   ├── components/           # UI components (shadcn/ui + Tailwind), charts (Recharts)
 │   │   ├── lib/                  # API client for backend, auth helpers
 │   │   └── package.json
 │   │
 │   ├── api/                      # FastAPI (Python) — business logic, owns Postgres
 │   │   ├── app/
-│   │   │   ├── routers/          # REST endpoints: cards, leads, exhibitions, orgs, wallet, invoices, payments/webhooks
+│   │   │   ├── routers/          # REST endpoints: cards, leads, exhibitions, orgs, wallet, invoices, payments/webhooks, feedback
 │   │   │   ├── services/
 │   │   │   │   ├── ocr.py            # Card image → structured fields (vision LLM)
 │   │   │   │   ├── enrichment.py     # Company name → firmographics lookup
 │   │   │   │   ├── scoring.py        # Firmographics + role → product-fit score
 │   │   │   │   ├── billing.py        # Wallet debits/credits, pricing lookup, ledger writes
 │   │   │   │   ├── invoicing.py      # Invoice generation on wallet recharge, service name "Visiting Card Recharge and Scoring"
-│   │   │   │   └── payments.py       # Razorpay order creation + webhook verification
+│   │   │   │   ├── payments.py       # Razorpay order creation + webhook verification
+│   │   │   │   └── notifications.py  # Outbound transactional email (e.g. support-query ticket notifications to info@dashrtech.com)
 │   │   │   ├── models/           # SQLAlchemy models (multi-tenant, org-scoped)
 │   │   │   ├── workers/          # Celery tasks for async batch processing
 │   │   │   └── db/               # Session management, Alembic migrations
@@ -69,7 +71,9 @@ dashr-ai/
 - New scoring criteria/weights → `apps/api/app/services/scoring.py`, kept as configurable data, not hardcoded branches
 - Per-action pricing (parse/enrich/score rates) → `apps/api/app/services/billing.py`, kept as configurable data, not hardcoded branches — same principle as scoring weights, since prices will change and may eventually vary per-org
 - Razorpay order creation, signature verification, and webhook handling → `apps/api/app/services/payments.py` + `apps/api/app/routers/payments` only; never verify payment status from a client-side callback alone
-- Marketing/static pages (privacy policy, terms of use) → `apps/web/app/(marketing)/`, publicly accessible, no auth required
+- Marketing/static pages (privacy policy, terms of use, FAQ) → `apps/web/app/(marketing)/`, publicly accessible, no auth required
+- The Feedback page → `apps/web/app/feedback/`, a sidebar nav item alongside Settings/FAQ, not under `(marketing)/`
+- Feedback storage and the "raise a query" ticket id + email dispatch → `apps/api` (`feedback` router + `notifications.py`), never a client-side/mailto-only submission — unlike the general FAQ contact link (`mailto:info@dashrtech.com`), a raised query must be durably stored and provably emailed
 - The DASHR logo (vector) → `assets/brand/`, the single canonical copy; both `apps/web` (site chrome) and `apps/api` (invoice PDF header) read from it rather than keeping separate copies
 
 ---
@@ -91,6 +95,7 @@ dashr-ai/
 | Wallet/billing ledger | Append-only ledger table in Postgres (SQLAlchemy), org-scoped | Money-bearing balances must be auditable and reconstructable from history, not just a mutable balance column |
 | Invoicing | Server-generated PDF invoice per wallet recharge, single line item "Visiting Card Recharge and Scoring", stored in object storage, linked from Postgres, surfaced to the user via a new Orders section under Settings | Sellers need a durable, re-viewable record per recharge, not per individual/bulk parse action; never regenerate an invoice's contents after issue |
 | Analytics/charts | Recharts (pairs with shadcn/ui) on the dashboard page | Lead-type/industry/score breakdowns need charts, not just tables; keep it in the same design system as the rest of the UI |
+| Transactional email | Provider TBD (e.g. SES/SendGrid) — to be finalized in the Feedback & Support spec | A raised support query must reliably reach info@dashrtech.com from the backend itself, not rely on a client-side mailto link |
 | Infra | Docker Compose (local), containers on AWS/GCP (prod) | Standard, portable, no vendor lock-in for a small early-stage service |
 | CI/CD | GitHub Actions | Matches the existing GitHub-hosted repo and installed GitHub plugin |
 
@@ -104,6 +109,7 @@ dashr-ai/
   - **Uploaded-by** filters on `VisitingCard.user_id` (no new column) and is visible **only to org admins** — a `member`/org-less user never sees it, since they only ever see their own rows anyway. `/upload` already has this filter (`showUserFilter`/`userFilter`, populated via `GET /orgs/members`, applied through `GET /cards?user_id=`); `/dashboard` gains the matching control in `DashboardFilterBar`, and `GET /analytics/dashboard` gains a `user_id` query param threaded through `AnalyticsFilters`/`_apply_shared_filters` the same way `exhibition_ids`/`start_date`/`end_date` already are
   - Both filters are always applied **on top of** `scope_to_visible_users`, never in place of it — `user_id` (like `exhibition_id`/date bounds) can only ever narrow an already-visibility-scoped query, never widen it, so a non-admin or cross-org id passed to either endpoint yields an empty result, never a leak. The uploaded-by control is populated exclusively from `GET /orgs/members` (org-scoped, admin-only) — never a global user search or lookup by raw id/email
 - The homepage carries public **Privacy Policy** and **Terms of Use** sections/pages — static content, no auth, served from `apps/web/app/(marketing)/`
+- The **Feedback** page is a new item in the logged-in app's sidebar nav (`apps/web/components/sidebar.tsx`'s `NAV` list), positioned just below **Settings** and **FAQ** — not a CTA embedded in the FAQ page itself. It asks what's good about the tool and what went wrong (stored as `Feedback` rows for later internal product review, never shown back to any user), and has a separate "raise a query" section that stores a `SupportQuery`, assigns it a ticket id, and emails the full details to info@dashrtech.com — a spec for this page is coming separately
 - The **profile page** collects each User's GST No. and Billing Address as optional fields on their `SellerProfile` row (in addition to the standard company/product fields) — captured per-User (via the 1:1 `SellerProfile`), not a single org-wide setting, since billing is per-user. Neither is mandatory, at profile-save time or for Invoice generation — an Invoice is issued whether or not either is populated, carrying whatever value (including blank) the `SellerProfile` row holds at issue time
 - **Settings** gains a new **Orders** section listing every Invoice issued to the current user (one row per Wallet recharge), each with a PDF download — this is the only surface where a user views/downloads their invoices; a spec for this section is coming separately
 
@@ -147,6 +153,8 @@ dashr-ai/
   - **GST:** 06AAMCD5859M1ZX
   - **Address:** 1185P, Near Arora Properties, Sector 46, Gurugram, Haryana 122001, India
 - **PricingRate** — configurable per-action rate (parse/enrichment/scoring, currently ₹5/₹3/₹2), versioned so historical invoices remain correct if rates change later
+- **Feedback** — a free-text "what's good" / "what went wrong" submission from the Feedback page (reached via the FAQ page's "Feedback" CTA). Open to any visitor, not gated behind login: captures `user_id`/`org_id` when the submitter happens to be signed in, else left null for an anonymous visitor. Stored purely for internal product-improvement review — never surfaced back to any user or org
+- **SupportQuery** — a "raise a query" submission from the same Feedback page. On creation the API assigns a human-readable ticket id and sends a server-side email to info@dashrtech.com with the full query details — never a client-side/mailto submission, so ticket issuance and email dispatch stay atomic and auditable. Like Feedback, open to anonymous visitors; captures `user_id`/`org_id` only when the submitter is signed in
 
 ---
 
@@ -201,4 +209,6 @@ dashr-ai/
 - **Never charge for a correction-triggered re-fetch or rescore** — an IndiaMART URL correction's re-fetch and a post-correction rescore are both free by design (no `billing.charge_for_action` call at all), so never call `billing.refund_action` for either on a failure path either — refund_action always decrements `FreeActionAllowance.used_count`, which would be wrong for an action that never incremented it in the first place
 - **Never let a rescore happen without a `FieldCorrection` that postdates the card's `scored_at`** — scoring stays one-shot by default; a correction is what unlocks exactly one free rescore, re-checked inside `score_card_task` itself (not just the router/service gate), so two racing enqueues can't both slip through
 - **Never accept a field correction whose `corrected_value` equals the field's current value** — since no correction is billed, an identical resubmission is otherwise a free way to spam-unlock rescores or (for the IndiaMART URL) spam-trigger a paid Apify re-fetch for zero actual change; reject it before writing anything. The IndiaMART URL additionally carries a short per-user cooldown, since the no-op check alone doesn't stop cycling between two distinct real URLs — a cheap anti-abuse throttle, not a comprehensive rate limiter, now that billing no longer serves that role for this action
+- **Never let the "raise a query" flow depend on a client-side mailto or an unaudited email call** — ticket id issuance and the email to info@dashrtech.com must happen server-side in `apps/api` so every query is durably stored and provably sent, unlike the plain mailto link already used elsewhere on the FAQ page
+- **Never require login for the Feedback page or its "raise a query" section** — it's reached from the public FAQ page; capture `user_id`/`org_id` only when a submitter happens to be signed in, don't gate the form behind auth
 - This file describes the target architecture for a repo that currently has no application code — when code starts landing, keep this file in sync with what's actually built rather than what was planned
