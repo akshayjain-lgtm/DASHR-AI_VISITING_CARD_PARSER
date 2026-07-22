@@ -20,6 +20,7 @@ import { OBtn, GBtn, DBtn } from "@/components/buttons";
 import { CardDetailDrawer } from "@/components/card-detail-drawer";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import {
+  formatExhibitionLabel,
   RANGE_OPTIONS,
   UploadedByFilter,
   rangeToDates,
@@ -57,6 +58,28 @@ import {
 } from "@/lib/use-delete-card-confirm";
 import { useCardSelection } from "@/lib/use-card-selection";
 
+// Native <input type="date"> renders wildly differently across browsers/
+// devices (its own locale-format placeholder, inconsistent intrinsic sizing
+// vs. a plain text input, no way to show a custom hint without it colliding
+// with that native placeholder) — a plain text field with dd/mm/yyyy
+// validation instead guarantees the exact same box as the Exhibition
+// name/Location fields everywhere, and a hint that's actually visible.
+function parseDdMmYyyyToIso(value: string): string | null {
+  const match = value.trim().match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (!match) return null;
+  const [, dd, mm, yyyy] = match;
+  const day = Number(dd);
+  const month = Number(mm);
+  const year = Number(yyyy);
+  const date = new Date(year, month - 1, day);
+  // Rejects out-of-range values like 31/02/2026 — the Date constructor
+  // silently rolls those over into the next month instead of erroring.
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+    return null;
+  }
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 export default function UploadPage() {
   const [exhibitions, setExhibitions] = useState<ExhibitionOut[]>([]);
   // "" = General capture (cards with no exhibition), "all" = every card
@@ -65,6 +88,9 @@ export default function UploadPage() {
   const [showCreateExhibition, setShowCreateExhibition] = useState(false);
   const [newExhibitionName, setNewExhibitionName] = useState("");
   const [newExhibitionLocation, setNewExhibitionLocation] = useState("");
+  // Raw dd/mm/yyyy text as typed — parsed to ISO only at submit time via
+  // parseDdMmYyyyToIso, so an in-progress/invalid string never blocks typing.
+  const [newExhibitionStartDate, setNewExhibitionStartDate] = useState("");
 
   const [files, setFiles] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -447,18 +473,21 @@ export default function UploadPage() {
   }
 
   async function handleCreateExhibition() {
-    if (!newExhibitionName.trim()) return;
+    const startDateIso = parseDdMmYyyyToIso(newExhibitionStartDate);
+    if (!newExhibitionName.trim() || !startDateIso) return;
     setExhibitionError(null);
     try {
       const exhibition = await createExhibition({
         name: newExhibitionName.trim(),
         location: newExhibitionLocation.trim() || undefined,
+        start_date: startDateIso,
       });
       setExhibitions((prev) => [exhibition, ...prev]);
       setSelectedExhibitionId(exhibition.exhibition_id);
       setShowCreateExhibition(false);
       setNewExhibitionName("");
       setNewExhibitionLocation("");
+      setNewExhibitionStartDate("");
     } catch (err) {
       setExhibitionError(
         err instanceof ApiError ? err.message : "Failed to create exhibition"
@@ -797,7 +826,7 @@ export default function UploadPage() {
               <option value="all">All (every exhibition)</option>
               {exhibitions.map((ex) => (
                 <option key={ex.exhibition_id} value={ex.exhibition_id}>
-                  {ex.name}
+                  {formatExhibitionLabel(ex)}
                 </option>
               ))}
             </select>
@@ -813,16 +842,30 @@ export default function UploadPage() {
                 placeholder="Exhibition name"
                 value={newExhibitionName}
                 onChange={(e) => setNewExhibitionName(e.target.value)}
-                className="w-full border border-black/12 px-3 py-2 text-sm focus:outline-none focus:border-[#E65527] bg-white"
+                className="w-full h-10 box-border border border-black/12 px-3 py-2 text-sm focus:outline-none focus:border-[#E65527] bg-white"
+              />
+              <input
+                type="text"
+                inputMode="numeric"
+                placeholder="Start date (dd/mm/yyyy)"
+                aria-label="Start date"
+                maxLength={10}
+                value={newExhibitionStartDate}
+                onChange={(e) => setNewExhibitionStartDate(e.target.value)}
+                className="w-full h-10 box-border border border-black/12 px-3 py-2 text-sm focus:outline-none focus:border-[#E65527] bg-white"
               />
               <input
                 type="text"
                 placeholder="Location (optional)"
                 value={newExhibitionLocation}
                 onChange={(e) => setNewExhibitionLocation(e.target.value)}
-                className="w-full border border-black/12 px-3 py-2 text-sm focus:outline-none focus:border-[#E65527] bg-white"
+                className="w-full h-10 box-border border border-black/12 px-3 py-2 text-sm focus:outline-none focus:border-[#E65527] bg-white"
               />
-              <OBtn onClick={handleCreateExhibition} className="text-sm">
+              <OBtn
+                onClick={handleCreateExhibition}
+                disabled={!newExhibitionName.trim() || !parseDdMmYyyyToIso(newExhibitionStartDate)}
+                className="text-sm"
+              >
                 Create Exhibition
               </OBtn>
               {exhibitionError && (

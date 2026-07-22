@@ -370,7 +370,9 @@ def test_create_archive_upload_valid_pdf_returns_201_processing_and_enqueues_tas
 def test_create_archive_upload_attaches_to_own_exhibition_id(client, fake_otp_provider, monkeypatch):
     _authenticated_user(client, fake_otp_provider)
     _patch_expand_delay(monkeypatch)
-    exhibition = client.post("/exhibitions", json={"name": "Archive Attach Show"})
+    exhibition = client.post(
+        "/exhibitions", json={"name": "Archive Attach Show", "start_date": "2026-05-01"}
+    )
     assert exhibition.status_code == 201, exhibition.text
     exhibition_id = exhibition.json()["exhibition_id"]
 
@@ -422,7 +424,9 @@ def test_create_archive_upload_with_other_users_exhibition_id_returns_404_and_to
 
     with TestClient(fastapi_app) as other_client:
         _authenticated_user(other_client, fake_otp_provider)
-        theirs = other_client.post("/exhibitions", json={"name": "Not Yours"})
+        theirs = other_client.post(
+            "/exhibitions", json={"name": "Not Yours", "start_date": "2026-05-01"}
+        )
         assert theirs.status_code == 201, theirs.text
         their_exhibition_id = theirs.json()["exhibition_id"]
 
@@ -727,7 +731,9 @@ def test_expand_archive_upload_attaches_created_cards_to_the_archives_exhibition
     client, fake_otp_provider, db_session, monkeypatch
 ):
     _authenticated_user(client, fake_otp_provider)
-    exhibition = client.post("/exhibitions", json={"name": "Expand Attach Show"})
+    exhibition = client.post(
+        "/exhibitions", json={"name": "Expand Attach Show", "start_date": "2026-06-01"}
+    )
     assert exhibition.status_code == 201, exhibition.text
     exhibition_id = exhibition.json()["exhibition_id"]
 

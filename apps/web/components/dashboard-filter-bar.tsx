@@ -59,6 +59,26 @@ export function UploadedByFilter({
   );
 }
 
+const SHORT_MONTHS = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+// Exhibitions recur (the same trade show happens again next year), so the
+// name alone doesn't disambiguate one occurrence from another — every
+// exhibition-facing label appends "- Mon/yy" from start_date wherever one
+// exists. Parsed as a plain string (not `new Date(...)`) since start_date is
+// a date-only "YYYY-MM-DD" wire value with no time component — routing it
+// through `Date` risks a local-timezone off-by-one-day shift.
+export function formatExhibitionLabel(
+  exhibition: Pick<ExhibitionOut, "name" | "start_date">
+): string {
+  const name = exhibition.name?.trim() || "Unnamed exhibition";
+  if (!exhibition.start_date) return name;
+  const [year, month] = exhibition.start_date.split("-");
+  return `${name} - ${SHORT_MONTHS[Number(month) - 1]}/${year.slice(2)}`;
+}
+
 // Checkbox dropdown, not a native <select multiple> — a fixed-height
 // listbox is a poor fit on small touch screens (dataviz skill's
 // filter-composition rule cares about usability, not just correctness).
@@ -86,11 +106,14 @@ function ExhibitionMultiSelect({
     onChange(selectedIds.includes(id) ? selectedIds.filter((x) => x !== id) : [...selectedIds, id]);
   }
 
+  const singleSelected = exhibitions.find((e) => e.exhibition_id === selectedIds[0]);
   const label =
     selectedIds.length === 0
       ? "All exhibitions"
       : selectedIds.length === 1
-      ? exhibitions.find((e) => e.exhibition_id === selectedIds[0])?.name ?? "1 exhibition"
+      ? singleSelected
+        ? formatExhibitionLabel(singleSelected)
+        : "1 exhibition"
       : `${selectedIds.length} exhibitions`;
 
   return (
@@ -125,7 +148,7 @@ function ExhibitionMultiSelect({
                 checked={selectedIds.includes(exhibition.exhibition_id)}
                 onChange={() => toggle(exhibition.exhibition_id)}
               />
-              <span className="truncate">{exhibition.name ?? "Unnamed exhibition"}</span>
+              <span className="truncate">{formatExhibitionLabel(exhibition)}</span>
             </label>
           ))}
         </div>

@@ -10,7 +10,11 @@ from app.core.config import settings
 class ExhibitionCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     location: str | None = None
-    start_date: date | None = None
+    # Required so the same-name+same-start_date dedupe check in
+    # exhibition_service always has a date to compare against — an
+    # exhibition recurs across years/venues, and the date is what tells two
+    # otherwise-identical names apart.
+    start_date: date
     end_date: date | None = None
 
 

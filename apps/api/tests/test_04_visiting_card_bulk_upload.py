@@ -296,28 +296,121 @@ def test_create_exhibition_returns_201_owned_by_caller_with_expected_fields(clie
     )
 
 
-def test_create_exhibition_with_only_required_name_returns_201_with_null_optional_fields(
+def test_create_exhibition_with_only_required_fields_returns_201_with_null_optional_fields(
     client, fake_otp_provider
 ):
     _authenticated_user(client, fake_otp_provider)
 
-    resp = client.post("/exhibitions", json={"name": "Minimal Show"})
+    resp = client.post(
+        "/exhibitions", json={"name": "Minimal Show", "start_date": "2026-09-01"}
+    )
 
     assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["name"] == "Minimal Show"
+    assert body["start_date"] == "2026-09-01"
     assert body["location"] is None
-    assert body["start_date"] is None
     assert body["end_date"] is None
 
 
 def test_create_exhibition_missing_name_returns_422(client, fake_otp_provider):
     _authenticated_user(client, fake_otp_provider)
 
-    resp = client.post("/exhibitions", json={"location": "Pune"})
+    resp = client.post(
+        "/exhibitions", json={"location": "Pune", "start_date": "2026-09-01"}
+    )
 
     assert resp.status_code == 422, resp.text
     assert "detail" in resp.json()
+
+
+def test_create_exhibition_missing_start_date_returns_422(client, fake_otp_provider):
+    _authenticated_user(client, fake_otp_provider)
+
+    resp = client.post("/exhibitions", json={"name": "No Date Show"})
+
+    assert resp.status_code == 422, resp.text
+    assert "detail" in resp.json()
+
+
+# --------------------------------------------------------------------------
+# 2b. POST /exhibitions — dedupe on (name, start_date)
+# --------------------------------------------------------------------------
+
+
+def test_create_exhibition_same_name_and_date_returns_409(client, fake_otp_provider):
+    _authenticated_user(client, fake_otp_provider)
+
+    first = client.post(
+        "/exhibitions", json={"name": "IMTEX 2026", "start_date": "2026-08-01"}
+    )
+    assert first.status_code == 201, first.text
+
+    dup = client.post(
+        "/exhibitions", json={"name": "imtex 2026 ", "start_date": "2026-08-01"}
+    )
+
+    assert dup.status_code == 409, dup.text
+    assert "detail" in dup.json()
+
+
+def test_create_exhibition_same_name_different_date_is_allowed(client, fake_otp_provider):
+    _authenticated_user(client, fake_otp_provider)
+
+    first = client.post(
+        "/exhibitions", json={"name": "Annual Expo", "start_date": "2026-08-01"}
+    )
+    assert first.status_code == 201, first.text
+
+    second = client.post(
+        "/exhibitions", json={"name": "Annual Expo", "start_date": "2027-08-01"}
+    )
+
+    assert second.status_code == 201, (
+        f"{second.text} — the same exhibition recurring on a different date must be "
+        "allowed; the dedupe check is on (name, start_date) together, not name alone"
+    )
+
+
+def test_create_exhibition_same_name_and_date_by_org_mate_returns_409(
+    client, fake_otp_provider, fake_invite_email_provider
+):
+    _create_org_admin(client, fake_otp_provider, company_name="Dedupe Org")
+    admin_created = client.post(
+        "/exhibitions", json={"name": "Org Expo", "start_date": "2026-08-01"}
+    )
+    assert admin_created.status_code == 201, admin_created.text
+
+    with TestClient(fastapi_app) as member_client:
+        _add_org_member(client, member_client, fake_otp_provider, fake_invite_email_provider)
+        member_dup = member_client.post(
+            "/exhibitions", json={"name": "Org Expo", "start_date": "2026-08-01"}
+        )
+
+        assert member_dup.status_code == 409, (
+            f"{member_dup.text} — dedupe must apply across the whole organization, "
+            "not just the creating user's own exhibitions"
+        )
+
+
+def test_create_exhibition_same_name_and_date_different_org_is_allowed(
+    client, fake_otp_provider
+):
+    _authenticated_user(client, fake_otp_provider)
+    mine = client.post(
+        "/exhibitions", json={"name": "Cross Org Expo", "start_date": "2026-08-01"}
+    )
+    assert mine.status_code == 201, mine.text
+
+    with TestClient(fastapi_app) as other_client:
+        _authenticated_user(other_client, fake_otp_provider)
+        theirs = other_client.post(
+            "/exhibitions", json={"name": "Cross Org Expo", "start_date": "2026-08-01"}
+        )
+
+        assert theirs.status_code == 201, (
+            f"{theirs.text} — dedupe must not leak across unrelated users/orgs"
+        )
 
 
 # --------------------------------------------------------------------------
@@ -327,12 +420,12 @@ def test_create_exhibition_missing_name_returns_422(client, fake_otp_provider):
 
 def test_list_exhibitions_returns_only_callers_own_for_org_less_user(client, fake_otp_provider):
     _authenticated_user(client, fake_otp_provider)
-    mine = client.post("/exhibitions", json={"name": "My Show"})
+    mine = client.post("/exhibitions", json={"name": "My Show", "start_date": "2026-01-01"})
     assert mine.status_code == 201, mine.text
 
     with TestClient(fastapi_app) as other_client:
         _authenticated_user(other_client, fake_otp_provider)
-        theirs = other_client.post("/exhibitions", json={"name": "Their Show"})
+        theirs = other_client.post("/exhibitions", json={"name": "Their Show", "start_date": "2026-01-01"})
         assert theirs.status_code == 201, theirs.text
 
         my_list = client.get("/exhibitions")
@@ -468,7 +561,7 @@ def test_bulk_upload_accepts_every_configured_content_type(
 
 def test_bulk_upload_with_own_exhibition_id_attaches_cards_to_it(client, fake_otp_provider, jpeg_bytes):
     _authenticated_user(client, fake_otp_provider)
-    exhibition = client.post("/exhibitions", json={"name": "Attach Show"})
+    exhibition = client.post("/exhibitions", json={"name": "Attach Show", "start_date": "2026-02-01"})
     assert exhibition.status_code == 201, exhibition.text
     exhibition_id = exhibition.json()["exhibition_id"]
 
@@ -495,7 +588,7 @@ def test_bulk_upload_with_other_users_exhibition_id_returns_404_and_creates_noth
 
     with TestClient(fastapi_app) as other_client:
         _authenticated_user(other_client, fake_otp_provider)
-        theirs = other_client.post("/exhibitions", json={"name": "Not Yours"})
+        theirs = other_client.post("/exhibitions", json={"name": "Not Yours", "start_date": "2026-02-01"})
         assert theirs.status_code == 201, theirs.text
         their_exhibition_id = theirs.json()["exhibition_id"]
 
@@ -641,7 +734,7 @@ def test_list_cards_returns_only_callers_own_for_org_less_user(client, fake_otp_
 
 def test_list_cards_filter_by_exhibition_id(client, fake_otp_provider, jpeg_bytes):
     _authenticated_user(client, fake_otp_provider)
-    exhibition = client.post("/exhibitions", json={"name": "Filter Show"})
+    exhibition = client.post("/exhibitions", json={"name": "Filter Show", "start_date": "2026-03-01"})
     assert exhibition.status_code == 201, exhibition.text
     exhibition_id = exhibition.json()["exhibition_id"]
 
@@ -665,7 +758,7 @@ def test_list_cards_filter_by_exhibition_id(client, fake_otp_provider, jpeg_byte
 
 def test_list_cards_filter_by_unassigned(client, fake_otp_provider, jpeg_bytes):
     _authenticated_user(client, fake_otp_provider)
-    exhibition = client.post("/exhibitions", json={"name": "Unassigned Filter Show"})
+    exhibition = client.post("/exhibitions", json={"name": "Unassigned Filter Show", "start_date": "2026-03-01"})
     assert exhibition.status_code == 201, exhibition.text
     exhibition_id = exhibition.json()["exhibition_id"]
 
@@ -941,7 +1034,7 @@ def test_admin_sees_every_org_members_exhibitions_and_cards(
     client, fake_otp_provider, fake_invite_email_provider, jpeg_bytes
 ):
     _create_org_admin(client, fake_otp_provider, company_name="Visibility Org")
-    admin_exhibition = client.post("/exhibitions", json={"name": "Admin's Expo"})
+    admin_exhibition = client.post("/exhibitions", json={"name": "Admin's Expo", "start_date": "2026-04-01"})
     assert admin_exhibition.status_code == 201, admin_exhibition.text
     admin_upload = _upload_files(client, [("admin.jpg", jpeg_bytes, "image/jpeg")])
     assert admin_upload.status_code == 201, admin_upload.text
@@ -949,7 +1042,7 @@ def test_admin_sees_every_org_members_exhibitions_and_cards(
 
     with TestClient(fastapi_app) as member_client:
         _add_org_member(client, member_client, fake_otp_provider, fake_invite_email_provider)
-        member_exhibition = member_client.post("/exhibitions", json={"name": "Member's Expo"})
+        member_exhibition = member_client.post("/exhibitions", json={"name": "Member's Expo", "start_date": "2026-04-01"})
         assert member_exhibition.status_code == 201, member_exhibition.text
         member_upload = _upload_files(member_client, [("member.jpg", jpeg_bytes, "image/jpeg")])
         assert member_upload.status_code == 201, member_upload.text
