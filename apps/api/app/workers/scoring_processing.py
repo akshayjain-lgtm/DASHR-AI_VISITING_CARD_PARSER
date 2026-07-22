@@ -16,6 +16,7 @@ from app.services import (
     billing,
     field_correction_service,
     geocode_service,
+    lead_cooldown_service,
     product_fit_service,
     profile_service,
     scoring,
@@ -61,28 +62,37 @@ def score_card_task(self, card_id: str, billed: bool = False) -> None:
     no external I/O and so has no in-flight status to transition through —
     there is no fresh-delivery-vs-retry branch on self.request.retries.
     Instead the eligibility checks (card.status == "extracted", card not
-    already scored unless a correction postdates its last score) are re-run
+    already scored unless a correction postdates its last score or its
+    lead-cooldown has elapsed — see lead_cooldown_service.py,
+    .claude/specs/24-company-linkage-tiered-expiry.md) are re-run
     identically on every attempt, fresh or retried; if the card's status
     moved out of "extracted" underneath a stuck/retried task, or it was
-    already scored (with no correction since) by a duplicate/concurrent
-    enqueue, the task just logs and returns rather than clobbering a card
-    that's no longer eligible. This is the same rule enforced in
-    card_service.score_card_now/enqueue_scoring, re-checked here too since
-    two enqueues racing past the service-layer check could otherwise both
-    reach this task.
+    already scored (with neither rescore reason true) by a
+    duplicate/concurrent enqueue, the task just logs and returns rather than
+    clobbering a card that's no longer eligible. This is the same rule
+    enforced in card_service.score_card_now/enqueue_scoring, re-checked here
+    too since two enqueues racing past the service-layer check could
+    otherwise both reach this task.
 
     `is_rescore` (whether lead_score was already set when this run started)
-    is derived fresh from the card here, not passed in — it doubles as the
-    signal for whether `billed`/refund-on-failure applies at all: a free
-    rescore (see .claude/specs/20-field-correction.md) never went through
-    billing.charge_for_action, so refund_action must never be called for
-    it on retry exhaustion — that would incorrectly decrement the user's
-    free-allowance count for an action they never actually used it on.
-    `is_rescore` also gates scoring-version resolution: a rescore is always
-    pinned to the version already stored on the card's score_breakdown
-    (see .claude/specs/10-lead-scoring.md "Scoring versioning & A/B
+    is derived fresh from the card here, not passed in, and gates scoring-
+    version resolution: a rescore is always pinned to the version already
+    stored on the card's score_breakdown (see
+    .claude/specs/10-lead-scoring.md "Scoring versioning & A/B
     experimentation") rather than re-rolling the experiment assignment, so
-    a correction can change a card's score but never its scoring version.
+    a correction/cooldown-triggered rescore can change a card's score but
+    never its scoring version — this applies to both rescore reasons alike.
+
+    `free_rescore` (a strict subset of `is_rescore`: true only when the
+    correction-triggered reason applied) is the actual signal for whether
+    `billed`/refund-on-failure applies at all: a free rescore (see
+    .claude/specs/20-field-correction.md) never went through
+    billing.charge_for_action, so refund_action must never be called for it
+    on retry exhaustion — that would incorrectly decrement the user's
+    free-allowance count for an action they never actually used it on. A
+    cooldown-triggered rescore (is_rescore True, free_rescore False) *was*
+    billed via charge_for_action in card_service, exactly like a first-ever
+    score, so it must be refunded on a permanent failure the same way.
 
     Seller calibration is loaded from the card's own owner (card.user_id),
     not whoever triggered this task — matters when an org admin scores a
@@ -102,10 +112,17 @@ def score_card_task(self, card_id: str, billed: bool = False) -> None:
             )
             return
         is_rescore = card.lead_score is not None
-        if is_rescore and not field_correction_service.has_correction_since_score(db, card):
+        # free_rescore mirrors card_service.score_card_now's own priority
+        # rule: the correction-triggered reason is checked first and, when
+        # true, is what made this a free (never billed) rescore. A
+        # cooldown-triggered rescore is billed exactly like a first-ever
+        # score — see the refund branch below, which must only skip
+        # refunding the free case.
+        free_rescore = is_rescore and field_correction_service.has_correction_since_score(db, card)
+        if is_rescore and not free_rescore and not lead_cooldown_service.cooldown_elapsed(card):
             logger.info(
-                "score_card_task: card_id %s already scored, no correction since, skipping "
-                "(one-shot rule)",
+                "score_card_task: card_id %s already scored, no correction since and "
+                "lead-cooldown not elapsed, skipping (one-shot rule)",
                 card_id,
             )
             return
@@ -165,7 +182,7 @@ def score_card_task(self, card_id: str, billed: bool = False) -> None:
                 logger.error(
                     "score_card_task: exhausted retries for card_id=%s: %s", card_id, exc
                 )
-                if not is_rescore:
+                if not free_rescore:
                     billing.refund_action(
                         db, card.user_id, "scoring", billed=billed, reference_id=card.card_id
                     )

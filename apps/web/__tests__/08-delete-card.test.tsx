@@ -53,6 +53,7 @@ const sampleCardDetail: CardDetailOut = {
   score_breakdown: null,
   scored_at: null,
   rescore_available: false,
+  monthly_rescore_available: false,
   company: null,
   emails: [],
   phones: [],
@@ -76,6 +77,7 @@ const sampleCard: CardOut = {
   score_breakdown: null,
   scored_at: null,
   rescore_available: false,
+  monthly_rescore_available: false,
 };
 
 const sampleExhibitions: ExhibitionOut[] = [];

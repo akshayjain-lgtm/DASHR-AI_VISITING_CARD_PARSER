@@ -71,6 +71,7 @@ const baseCardFields = {
   score_breakdown: null,
   scored_at: null,
   rescore_available: false,
+  monthly_rescore_available: false,
 } as const;
 
 function makeCard(params: {

@@ -30,6 +30,29 @@ function SignalBadge({ children }: { children: React.ReactNode }) {
   );
 }
 
+// Shared "Rescore Card" button + explanatory caption, used by both the free
+// (correction-triggered) and billed (cooldown-triggered) rescore branches —
+// same button/behavior, only the caption differs (see
+// .claude/specs/24-company-linkage-tiered-expiry.md).
+function RescoreButton({
+  isScoring,
+  onScore,
+  caption,
+}: {
+  isScoring: boolean;
+  onScore: () => void;
+  caption: string;
+}) {
+  return (
+    <div className="space-y-1">
+      <OBtn onClick={onScore} disabled={isScoring} className="text-xs mt-2">
+        {isScoring ? "Rescoring…" : "Rescore Card"}
+      </OBtn>
+      <p className="text-[11px] text-black/30">{caption}</p>
+    </div>
+  );
+}
+
 // Inline pencil -> text input -> save/cancel editor, used for every
 // AI-extracted/enriched field a user can correct on this drawer (see
 // .claude/specs/20-field-correction.md). `onSave` is expected to call
@@ -461,6 +484,9 @@ export function CardDetailDrawer({
                       <p className="text-black/70">{card.company.summary}</p>
                     )}
                     <div className="flex flex-wrap gap-1">
+                      {card.company.is_linked_org && (
+                        <SignalBadge>Registered DASHR customer</SignalBadge>
+                      )}
                       {card.company.linkedin_employee_count != null && (
                         <SignalBadge>{card.company.linkedin_employee_count} employees</SignalBadge>
                       )}
@@ -540,6 +566,24 @@ export function CardDetailDrawer({
                     {isRefreshingCatalog && (
                       <p className="text-xs text-black/40 italic">Refreshing IndiaMART data…</p>
                     )}
+                    {card.company.enrichment_status === "enriched" &&
+                      card.company.refresh_available && (
+                        <div className="space-y-1.5">
+                          <OBtn
+                            onClick={handleEnrichCompany}
+                            disabled={isEnriching}
+                            className="text-xs"
+                          >
+                            {isEnriching ? "Starting…" : "Refresh Company Data"}
+                          </OBtn>
+                          <p className="text-[11px] text-black/30">
+                            This will use your wallet balance.
+                          </p>
+                          {enrichError && (
+                            <p className="text-xs text-red-600">{enrichError}</p>
+                          )}
+                        </div>
+                      )}
                   </div>
                 ) : (
                   <div className="text-sm text-black/30">
@@ -591,14 +635,17 @@ export function CardDetailDrawer({
                     {isScoring ? "Scoring…" : "Score Card"}
                   </OBtn>
                 ) : card.rescore_available ? (
-                  <div className="space-y-1">
-                    <OBtn onClick={handleScoreCard} disabled={isScoring} className="text-xs mt-2">
-                      {isScoring ? "Rescoring…" : "Rescore Card"}
-                    </OBtn>
-                    <p className="text-[11px] text-black/30">
-                      You corrected a field since this card was scored — rescoring is free.
-                    </p>
-                  </div>
+                  <RescoreButton
+                    isScoring={isScoring}
+                    onScore={handleScoreCard}
+                    caption="You corrected a field since this card was scored — rescoring is free."
+                  />
+                ) : card.monthly_rescore_available ? (
+                  <RescoreButton
+                    isScoring={isScoring}
+                    onScore={handleScoreCard}
+                    caption="It's been over a month since this lead's company data was pulled in — rescoring will use your wallet balance."
+                  />
                 ) : (
                   <p className="text-xs text-black/30 mt-2">
                     This card has already been scored — correct a field to unlock a free rescore.
