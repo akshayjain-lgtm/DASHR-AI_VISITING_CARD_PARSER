@@ -55,6 +55,14 @@ class ExhibitionNotFoundError(Exception):
     """Raised when a referenced exhibition_id doesn't exist or isn't visible to the caller."""
 
 
+class DuplicateExhibitionError(Exception):
+    """Raised by create_exhibition when another exhibition with the same
+    name (case-insensitive) and the same start_date already exists within
+    the caller's organization (or, for an org-less user, among that user's
+    own exhibitions) — the same trade show shouldn't get a second row just
+    because a different batch/user needed somewhere to attach cards to."""
+
+
 class ArchiveNotFoundError(Exception):
     """Raised when a referenced archive_id doesn't exist or isn't visible to the caller."""
 
