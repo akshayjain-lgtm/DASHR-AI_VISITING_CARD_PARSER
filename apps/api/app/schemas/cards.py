@@ -65,6 +65,12 @@ class CardOut(BaseModel):
     # extra query per card on every page load) — only to_card_out/
     # get_card_detail's single-card paths ever set it to a real value.
     rescore_available: bool = False
+    # True when this card's own per-lead cooldown has elapsed (see
+    # lead_cooldown_service.py, .claude/specs/24-company-linkage-tiered-expiry.md)
+    # and rescore_available is false — a rescore is still allowed, but billed
+    # like a first-ever score rather than free. Same defaulting rationale as
+    # rescore_available above.
+    monthly_rescore_available: bool = False
 
 
 class CardCompanyOut(BaseModel):
@@ -78,6 +84,15 @@ class CardCompanyOut(BaseModel):
     enrichment_status: str
     summary: str | None
     summary_generated_at: datetime | None
+    # True when Company.linked_org_id is set — this prospect is itself a
+    # registered DASHR org. The raw org id is never exposed here (see
+    # .claude/specs/24-company-linkage-tiered-expiry.md).
+    is_linked_org: bool
+    # True when enrichment_status == "enriched" and a refresh is available —
+    # either a CompanySignals tier has gone stale, or this card's own
+    # lead-cooldown has elapsed. Either way POST /cards/{card_id}/enrich-company
+    # will succeed (billed) while this is true.
+    refresh_available: bool = False
     linkedin_employee_count: int | None
     estimated_revenue_band: str | None
     gstin_verified: bool | None
@@ -153,6 +168,10 @@ class CardDetailOut(BaseModel):
     # True when a field was corrected after this card's last score — a free
     # rescore is allowed (see .claude/specs/20-field-correction.md).
     rescore_available: bool = False
+    # True when rescore_available is false but this card's per-lead cooldown
+    # has elapsed — a rescore is still allowed, but billed (see
+    # .claude/specs/24-company-linkage-tiered-expiry.md).
+    monthly_rescore_available: bool = False
     company: CardCompanyOut | None
     emails: list[CardEmailOut]
     phones: list[CardPhoneOut]

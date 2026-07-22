@@ -100,6 +100,7 @@ function makeCard(card_id: string, full_name: string, user_id = "user-1"): CardO
     score_breakdown: null,
     scored_at: null,
     rescore_available: false,
+    monthly_rescore_available: false,
   };
 }
 

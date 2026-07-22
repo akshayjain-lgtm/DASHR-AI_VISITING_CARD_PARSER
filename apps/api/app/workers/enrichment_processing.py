@@ -3,12 +3,13 @@ import uuid
 from datetime import datetime, timezone
 
 from celery.exceptions import MaxRetriesExceededError
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
 from app.models.card_email import CardEmail
 from app.models.company import Company
+from app.models.company_signals import CompanySignals
 from app.models.visiting_card import VisitingCard
 from app.services import billing, enrichment_service, enrichment_summary
 from app.services.industry_classification import classify_industry, fetch_website_text
@@ -51,10 +52,27 @@ def _card_email_domain(db: Session, card_id: uuid.UUID) -> str | None:
     max_retries=_MAX_ENRICHMENT_RETRIES,
 )
 def enrich_company_task(
-    self, company_id: str, source_card_id: str | None = None, billed: bool = False
+    self,
+    company_id: str,
+    source_card_id: str | None = None,
+    billed: bool = False,
+    refresh_tiers: list[str] | None = None,
 ) -> None:
-    """Runs the full public-source fan-out for one `Company` and maps the
-    outcome onto `enrichment_status`/`summary`.
+    """Runs the public-source fan-out for one `Company` and maps the outcome
+    onto `enrichment_status`/`summary`.
+
+    `refresh_tiers` distinguishes a first-ever run from a refresh of an
+    already-`"enriched"` company (see
+    .claude/specs/24-company-linkage-tiered-expiry.md): `None` (the default)
+    is a first-ever run — unchanged pending/enriching status-machine below.
+    A list (possibly empty — a lead-cooldown-only trigger with a fully fresh
+    cache) means a refresh: the company never transitions through
+    `"enriching"` and its `enrichment_status`/`enriched_at`/`industry` are
+    left untouched, only `CompanySignals`/`summary` are updated. Before
+    calling `run_all_signal_lookups`, the caller-provided tiers are
+    intersected with a freshly-read `enrichment_service.stale_tiers` so two
+    concurrent refreshes can't both re-hit the same already-being-refreshed
+    tier's third-party providers.
 
     `source_card_id` is the id of whichever card triggered this run — never
     the card's raw GSTIN. The GSTIN is re-loaded from that card here,
@@ -72,7 +90,10 @@ def enrich_company_task(
     Idempotency note: mirrors `process_card`'s `self.request.retries`
     fresh-delivery-vs-own-retry distinction exactly, swapping
     card.status/"new"/"processing" for company.enrichment_status/"pending"/
-    "enriching".
+    "enriching" — but only for a first-ever run; a refresh has no in-flight
+    status of its own to protect (see above), so its retry handling only
+    ever affects whether `enrichment_status` is left alone (refresh) or
+    marked `"failed"` (first-ever run) on exhausted retries.
 
     Unlike `process_card`, there is only one except clause here (not a
     permanent-vs-transient split) because every per-source failure is
@@ -104,8 +125,22 @@ def enrich_company_task(
                 website = source_card.website
                 address = source_card.address
 
+        is_refresh = refresh_tiers is not None
         is_retry = self.request.retries > 0
-        if not is_retry:
+        effective_tiers: list[str] | None = None
+
+        if is_refresh:
+            if company.enrichment_status != "enriched":
+                logger.info(
+                    "enrich_company_task refresh: company_id %s status=%s, skipping",
+                    company_id, company.enrichment_status,
+                )
+                return
+            existing_signals = db.get(CompanySignals, company.company_id)
+            effective_tiers = [
+                t for t in refresh_tiers if t in enrichment_service.stale_tiers(existing_signals)
+            ]
+        elif not is_retry:
             if company.enrichment_status != "pending":
                 logger.info(
                     "enrich_company_task: company_id %s already status=%s, skipping",
@@ -123,7 +158,8 @@ def enrich_company_task(
 
         try:
             signals, any_signal_found = enrichment_service.run_all_signal_lookups(
-                db, company, gst_number, email_domain, website, products_offered, address
+                db, company, gst_number, email_domain, website, products_offered, address,
+                refresh_tiers=effective_tiers,
             )
             summary = enrichment_summary.generate_summary(company, signals)
         except Exception as exc:
@@ -141,8 +177,14 @@ def enrich_company_task(
                     company_id, exc,
                 )
                 db.rollback()
-                company.enrichment_status = "failed"
-                db.commit()
+                if not is_refresh:
+                    # A first-ever run that never completes has no usable
+                    # data at all — mark it failed. A refresh that fails
+                    # leaves enrichment_status exactly as it was
+                    # ("enriched") — the existing (if stale) cached data is
+                    # still perfectly usable, so there's nothing to demote.
+                    company.enrichment_status = "failed"
+                    db.commit()
                 if refund_user_id is not None:
                     billing.refund_action(
                         db,
@@ -159,7 +201,7 @@ def enrich_company_task(
                     )
             return
 
-        if company.industry is None:
+        if not is_refresh and company.industry is None:
             # Never re-classify an already-classified company — same
             # caching principle as the rest of enrichment. Classification
             # failures (a dead/unreachable website, no keyword match
@@ -175,10 +217,36 @@ def enrich_company_task(
             if industry is not None:
                 company.industry = industry
 
+        now = datetime.now(timezone.utc)
         company.summary = summary
-        company.summary_generated_at = datetime.now(timezone.utc)
-        company.enrichment_status = "enriched" if any_signal_found else "not_found"
-        company.enriched_at = datetime.now(timezone.utc)
+        company.summary_generated_at = now
+        if not is_refresh:
+            company.enrichment_status = "enriched" if any_signal_found else "not_found"
+            company.enriched_at = now
+
+        # company_enriched_at stamping (the per-lead cooldown anchor, see
+        # lead_cooldown_service.py) — every sibling card riding on this
+        # company that doesn't have one yet gets filled first, then the
+        # triggering card's own timestamp is unconditionally overwritten
+        # (restarting its cooldown on a refresh; redundant but harmless on a
+        # first-ever run). Order matters: filling nulls first, then
+        # overwriting the triggering card specifically, so the bulk update's
+        # WHERE ... IS NULL clause can't accidentally skip it.
+        db.execute(
+            update(VisitingCard)
+            .where(
+                VisitingCard.company_id == company.company_id,
+                VisitingCard.company_enriched_at.is_(None),
+            )
+            .values(company_enriched_at=now)
+        )
+        if source_card_id is not None:
+            db.execute(
+                update(VisitingCard)
+                .where(VisitingCard.card_id == uuid.UUID(source_card_id))
+                .values(company_enriched_at=now)
+            )
+
         db.commit()
     finally:
         db.close()

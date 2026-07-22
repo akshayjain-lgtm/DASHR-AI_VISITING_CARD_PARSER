@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import ForeignKey, Numeric, text
+from sqlalchemy import ForeignKey, Index, Numeric, text
 from sqlalchemy.dialects.postgresql import TIMESTAMP, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -16,6 +16,13 @@ class SellerProfile(Base):
     """
 
     __tablename__ = "seller_profiles"
+    __table_args__ = (
+        # enrichment_service.match_linked_org scans this column on every
+        # enrichment call (first-run and refresh alike) to match a scanned
+        # Company against a registered org — see
+        # .claude/specs/24-company-linkage-tiered-expiry.md.
+        Index("ix_seller_profiles_company_name", "company_name"),
+    )
 
     profile_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")

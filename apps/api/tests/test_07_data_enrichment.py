@@ -869,8 +869,11 @@ def test_enrich_company_endpoint_enqueues_with_company_and_card_id_never_gstin(
         "enrich_company_task.delay must be called with (company_id, card_id) positionally"
     )
     # billed=False: a fresh user's first enrichment is covered by the free
-    # allowance (15-wallet-usage), not billed from the wallet.
-    assert kwargs == {"billed": False}
+    # allowance (15-wallet-usage), not billed from the wallet. refresh_tiers
+    # is None for a first-ever run (see
+    # .claude/specs/24-company-linkage-tiered-expiry.md) — both tiers are
+    # fetched unconditionally, same as the original one-shot behavior.
+    assert kwargs == {"billed": False, "refresh_tiers": None}
     _assert_gstin_never_appears(captured, gstin)
 
 

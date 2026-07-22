@@ -46,6 +46,14 @@ class VisitingCard(Base):
     )
     extraction_error: Mapped[str | None]
     processed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    # Since when this specific lead has had company enrichment data available
+    # to it — the anchor for the per-lead 30-day billed cooldown (see
+    # lead_cooldown_service.py), independent of CompanySignals' own
+    # factual/dynamic freshness clocks on the shared cache row. Set once the
+    # linked Company reaches a settled enrichment_status ("enriched" or
+    # "not_found"), either immediately at link time (extraction_service) or
+    # on enrich_company_task's success path.
+    company_enriched_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     lead_score: Mapped[Decimal | None] = mapped_column(Numeric)
     score_breakdown: Mapped[dict | None] = mapped_column(JSONB)
     scored_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))

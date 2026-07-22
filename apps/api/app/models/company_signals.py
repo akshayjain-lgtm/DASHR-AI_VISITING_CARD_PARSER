@@ -102,9 +102,12 @@ class CompanySignals(Base):
     indiamart_gst_registration_year: Mapped[int | None]
     indiamart_call_response_rate: Mapped[str | None]
 
-    # Set explicitly by enrichment_service.run_all_signal_lookups on every
-    # upsert — no ORM-level onupdate= here, since that would be dead code
-    # next to a call site that always overwrites it anyway.
-    updated_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), server_default=text("now()")
-    )
+    # Two independent freshness clocks (see
+    # .claude/specs/24-company-linkage-tiered-expiry.md), replacing the
+    # single updated_at this table used to carry — a refresh only re-fetches
+    # whichever half has actually gone stale. Set explicitly by
+    # enrichment_service.run_all_signal_lookups, only for the tier(s) it
+    # actually ran — no ORM-level onupdate=, same rationale as the old
+    # updated_at column had.
+    factual_fetched_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    dynamic_fetched_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
