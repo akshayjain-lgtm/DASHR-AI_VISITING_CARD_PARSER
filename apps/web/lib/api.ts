@@ -831,3 +831,22 @@ export function submitContactEnquiry(data: {
 }): Promise<void> {
   return request("/contact", { method: "POST", body: JSON.stringify(data) });
 }
+
+export type SupportQueryOut = {
+  ticket_id: string;
+  created_at: string;
+};
+
+export function submitFeedback(data: {
+  what_worked?: string;
+  what_went_wrong?: string;
+}): Promise<void> {
+  return request("/feedback", { method: "POST", body: JSON.stringify(data) });
+}
+
+export function submitSupportQuery(data: {
+  subject: string;
+  message: string;
+}): Promise<SupportQueryOut> {
+  return request("/feedback/queries", { method: "POST", body: JSON.stringify(data) });
+}
