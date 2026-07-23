@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { LayoutDashboard, Upload, Wallet, Settings, HelpCircle, Menu, X } from "lucide-react";
+import { LayoutDashboard, Upload, Wallet, Settings, HelpCircle, MessageSquare, Menu, X } from "lucide-react";
 import { DashrLogo } from "./dashr-logo";
 
 const NAV = [
@@ -11,6 +11,7 @@ const NAV = [
   { id: "wallet", label: "Wallet", icon: Wallet, path: "/wallet" },
   { id: "settings", label: "Settings", icon: Settings, path: "/settings" },
   { id: "faq", label: "FAQ", icon: HelpCircle, path: "/faq" },
+  { id: "feedback", label: "Feedback", icon: MessageSquare, path: "/feedback" },
 ];
 
 // The logo header and nav list — identical between the always-visible

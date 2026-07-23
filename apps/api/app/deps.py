@@ -10,6 +10,10 @@ from app.models.user import User
 from app.services.contact_email_provider import ConsoleContactEmailProvider, ContactEmailProvider
 from app.services.invite_email_provider import ConsoleInviteEmailProvider, InviteEmailProvider
 from app.services.otp_provider import ConsoleOtpProvider, OtpProvider
+from app.services.support_query_email_provider import (
+    ConsoleSupportQueryEmailProvider,
+    SupportQueryEmailProvider,
+)
 
 COOKIE_NAME = "dashr_session"
 
@@ -82,3 +86,14 @@ def get_contact_email_provider() -> ContactEmailProvider:
             "ConsoleContactEmailProvider must not be used when ENVIRONMENT=production"
         )
     return ConsoleContactEmailProvider()
+
+
+def get_support_query_email_provider() -> SupportQueryEmailProvider:
+    if settings.environment == "production":
+        # Same rationale as get_otp_provider above: ConsoleSupportQueryEmailProvider
+        # only logs the query, it must never be what actually ships.
+        raise RuntimeError(
+            "No production support query email provider configured — "
+            "ConsoleSupportQueryEmailProvider must not be used when ENVIRONMENT=production"
+        )
+    return ConsoleSupportQueryEmailProvider()
