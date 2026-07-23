@@ -8,8 +8,8 @@ ticket_id generation (app code calls nextval(), never a column default),
 mirroring invoice_number_seq so ticket numbering stays gap-free and safe
 under concurrent submissions without locking the table itself.
 
-Revision ID: 0024
-Revises: 0023
+Revision ID: 0026
+Revises: 0025
 Create Date: 2026-07-22
 
 """
@@ -18,8 +18,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision = "0024"
-down_revision = "0023"
+revision = "0026"
+down_revision = "0025"
 branch_labels = None
 depends_on = None
 
